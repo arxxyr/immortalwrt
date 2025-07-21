@@ -1,8 +1,8 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-PKG_VERSION:=2025.04
-PKG_HASH:=439d3bef296effd54130be6a731c5b118be7fddd7fcc663ccbc5fb18294d8718
+PKG_VERSION:=2025.07
+PKG_HASH:=0f933f6c5a426895bf306e93e6ac53c60870e4b54cda56d95211bec99e63bec7
 PKG_BUILD_DEPENDS:=!(TARGET_ramips||TARGET_mediatek_mt7623):arm-trusted-firmware-tools/host
 
 UBOOT_USE_INTREE_DTC:=1
@@ -324,6 +324,18 @@ define U-Boot/mt7981_cudy_tr3000-v1
   BL2_BOOTDEV:=cudy-tr3000-v1
   BL2_SOC:=mt7981
   DEPENDS:=+trusted-firmware-a-mt7981-cudy-tr3000-v1
+endef
+
+define U-Boot/mt7981_glinet_gl-mt2500
+  NAME:=GL.iNet GL-MT2500
+  BUILD_SUBTARGET:=filogic
+  BUILD_DEVICES:=glinet_gl-mt2500
+  UBOOT_CONFIG:=mt7981_glinet_gl-mt2500
+  UBOOT_IMAGE:=u-boot.fip
+  BL2_BOOTDEV:=emmc
+  BL2_SOC:=mt7981
+  BL2_DDRTYPE:=ddr4
+  DEPENDS:=+trusted-firmware-a-mt7981-emmc-ddr4
 endef
 
 define U-Boot/mt7981_glinet_gl-x3000
@@ -930,6 +942,30 @@ define U-Boot/mt7988_bananapi_bpi-r4-poe-snand
   DEPENDS:=+trusted-firmware-a-mt7988-spim-nand-ubi-comb
 endef
 
+define U-Boot/mt7988_tplink_tl-7dr7230-v1
+  NAME:=TP-Link TL-7DR7230 v1
+  BUILD_SUBTARGET:=filogic
+  BUILD_DEVICES:=tplink_tl-7dr7230-v1
+  UBOOT_CONFIG:=mt7988d_tplink_tl-7dr7230-v1
+  UBOOT_IMAGE:=u-boot.fip
+  BL2_BOOTDEV:=spim-nand
+  BL2_SOC:=mt7988
+  BL2_DDRTYPE:=ddr4
+  DEPENDS:=+trusted-firmware-a-mt7988-spim-nand-ddr4
+endef
+
+define U-Boot/mt7988_tplink_tl-7dr7230-v2
+  NAME:=TP-Link TL-7DR7230 v2
+  BUILD_SUBTARGET:=filogic
+  BUILD_DEVICES:=tplink_tl-7dr7230-v2
+  UBOOT_CONFIG:=mt7988d_tplink_tl-7dr7230-v2
+  UBOOT_IMAGE:=u-boot.fip
+  BL2_BOOTDEV:=spim-nand
+  BL2_SOC:=mt7988
+  BL2_DDRTYPE:=ddr3
+  DEPENDS:=+trusted-firmware-a-mt7988-spim-nand-ddr3
+endef
+
 define U-Boot/mt7988_tplink_tl-7dr7250-v1
   NAME:=TP-Link TL-7DR7250 v1
   BUILD_SUBTARGET:=filogic
@@ -1033,6 +1069,7 @@ UBOOT_TARGETS := \
 	mt7981_cmcc_rax3000me-nand-nousb \
 	mt7981_cudy_tr3000-v1 \
 	mt7981_gatonetworks_gdsp \
+	mt7981_glinet_gl-mt2500 \
 	mt7981_glinet_gl-x3000 \
 	mt7981_glinet_gl-xe3000 \
 	mt7981_h3c_magic-nx30-pro \
@@ -1082,6 +1119,8 @@ UBOOT_TARGETS := \
 	mt7988_bananapi_bpi-r4-poe-emmc \
 	mt7988_bananapi_bpi-r4-poe-sdmmc \
 	mt7988_bananapi_bpi-r4-poe-snand \
+	mt7988_tplink_tl-7dr7230-v1 \
+	mt7988_tplink_tl-7dr7230-v2 \
 	mt7988_tplink_tl-7dr7250-v1 \
 	mt7988_rfb-spim-nand \
 	mt7988_rfb-snand \

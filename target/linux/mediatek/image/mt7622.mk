@@ -260,6 +260,9 @@ define Device/mediatek_mt7622-rfb1
   DEVICE_MODEL := MTK7622 rfb1 AP
   DEVICE_DTS := mt7622-rfb1
   DEVICE_PACKAGES := kmod-ata-ahci-mtk kmod-btmtkuart kmod-usb3
+  UBOOT_PATH := $(STAGING_DIR_IMAGE)/mt7622_rfb1-u-boot-mtk.bin
+  ARTIFACTS := u-boot.bin
+  ARTIFACT/u-boot.bin := append-uboot
 endef
 TARGET_DEVICES += mediatek_mt7622-rfb1
 
@@ -279,6 +282,9 @@ define Device/mediatek_mt7622-rfb1-ubi
   IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | append-ubi | \
                 check-size $$$$(IMAGE_SIZE)
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  UBOOT_PATH := $(STAGING_DIR_IMAGE)/mt7622_rfb1-u-boot-mtk.bin
+  ARTIFACTS := u-boot.bin
+  ARTIFACT/u-boot.bin := append-uboot
 endef
 TARGET_DEVICES += mediatek_mt7622-rfb1-ubi
 
@@ -337,11 +343,8 @@ define Device/totolink_a8000ru
 endef
 TARGET_DEVICES += totolink_a8000ru
 
-define Device/tplink_tl-xdr3230-v1
+define Device/tplink_tl-xdr-common
   DEVICE_VENDOR := TP-Link
-  DEVICE_MODEL := TL-XDR3230
-  DEVICE_VARIANT := v1
-  DEVICE_DTS := mt7622-tplink_tl-xdr3230-v1
   DEVICE_DTS_DIR := ../dts
   DEVICE_PACKAGES := kmod-mt7915-firmware swconfig
   KERNEL := kernel-bin | lzma
@@ -352,7 +355,22 @@ define Device/tplink_tl-xdr3230-v1
   IMAGE/sysupgrade.itb := append-kernel | \
 	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb external-static-with-rootfs | pad-rootfs | append-metadata
 endef
+
+define Device/tplink_tl-xdr3230-v1
+  DEVICE_MODEL := TL-XDR3230
+  DEVICE_VARIANT := v1
+  DEVICE_DTS := mt7622-tplink-tl-xdr3230-v1
+  $(call Device/tplink_tl-xdr-common)
+endef
 TARGET_DEVICES += tplink_tl-xdr3230-v1
+
+define Device/tplink_tl-xdr3250-v1
+  DEVICE_MODEL := TL-XDR3250
+  DEVICE_VARIANT := v1
+  DEVICE_DTS := mt7622-tplink-tl-xdr3250-v1
+  $(call Device/tplink_tl-xdr-common)
+endef
+TARGET_DEVICES += tplink_tl-xdr3250-v1
 
 define Device/ubnt_unifi-6-lr-v1
   DEVICE_VENDOR := Ubiquiti
