@@ -5,9 +5,9 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-PKG_VERSION:=2025.07
+PKG_VERSION:=2025.10
 PKG_RELEASE:=1
-PKG_HASH:=0f933f6c5a426895bf306e93e6ac53c60870e4b54cda56d95211bec99e63bec7
+PKG_HASH:=b4f032848e56cc8f213ad59f9132c084dbbb632bc29176d024e58220e0efdf4a
 
 PKG_MAINTAINER:=Sarah Maedel <openwrt@tbspace.de>
 
@@ -323,6 +323,23 @@ define U-Boot/sige3-rk3568
 endef
 
 
+# RK3576 boards
+
+define U-Boot/rk3576/Default
+  BUILD_SUBTARGET:=armv8
+  DEPENDS:=+PACKAGE_u-boot-$(1):trusted-firmware-a-rk3576
+  ATF:=$(RK3576_ATF)
+  TPL:=$(RK3576_TPL)
+endef
+
+define U-Boot/rock-4d-rk3576
+  $(U-Boot/rk3576/Default)
+  NAME:=ROCK 4D
+  BUILD_DEVICES:= \
+    radxa_rock-4d
+endef
+
+
 # RK358x boards
 
 define U-Boot/rk358x/Default
@@ -457,6 +474,7 @@ UBOOT_TARGETS := \
   rock-3a-rk3568 \
   rock-3b-rk3568 \
   sige3-rk3568 \
+  rock-4d-rk3576 \
   cyber3588-aib-rk3588 \
   nanopc-t6-rk3588 \
   generic-rk3588 \
