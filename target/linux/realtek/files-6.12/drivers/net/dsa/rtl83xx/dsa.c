@@ -51,7 +51,7 @@ static void rtl83xx_enable_phy_polling(struct rtl838x_switch_priv *priv)
 	msleep(1000);
 	/* Enable all ports with a PHY, including the SFP-ports */
 	for (int i = 0; i < priv->cpu_port; i++) {
-		if (priv->ports[i].phy)
+		if (priv->ports[i].phy || priv->pcs[i])
 			v |= BIT_ULL(i);
 	}
 
@@ -436,7 +436,7 @@ static int rtl83xx_setup(struct dsa_switch *ds)
 	 * they will work in isolated mode (only traffic between port and CPU).
 	 */
 	for (int i = 0; i < priv->cpu_port; i++) {
-		if (priv->ports[i].phy) {
+		if (priv->ports[i].phy || priv->pcs[i]) {
 			priv->ports[i].pm = BIT_ULL(priv->cpu_port);
 			priv->r->traffic_set(i, BIT_ULL(i));
 		}
@@ -512,7 +512,7 @@ static int rtl93xx_setup(struct dsa_switch *ds)
 	 * they will work in isolated mode (only traffic between port and CPU).
 	 */
 	for (int i = 0; i < priv->cpu_port; i++) {
-		if (priv->ports[i].phy) {
+		if (priv->ports[i].phy || priv->pcs[i]) {
 			priv->ports[i].pm = BIT_ULL(priv->cpu_port);
 			priv->r->traffic_set(i, BIT_ULL(i));
 		}
@@ -546,26 +546,6 @@ static int rtl93xx_setup(struct dsa_switch *ds)
 	priv->r->led_init(priv);
 
 	return 0;
-}
-
-static int rtl93xx_get_sds(struct phy_device *phydev)
-{
-	struct device *dev = &phydev->mdio.dev;
-	struct device_node *dn;
-	u32 sds_num;
-
-	if (!dev)
-		return -1;
-	if (dev->of_node) {
-		dn = dev->of_node;
-		if (of_property_read_u32(dn, "sds", &sds_num))
-			sds_num = -1;
-	} else {
-		dev_err(dev, "No DT node.\n");
-		return -1;
-	}
-
-	return sds_num;
 }
 
 static struct phylink_pcs *rtldsa_phylink_mac_select_pcs(struct dsa_switch *ds,
@@ -692,11 +672,7 @@ static void rtl931x_phylink_mac_config(struct dsa_switch *ds, int port,
 					const struct phylink_link_state *state)
 {
 	struct rtl838x_switch_priv *priv = ds->priv;
-	int sds_num;
 	u32 reg;
-
-	sds_num = priv->ports[port].sds_num;
-	pr_info("%s: speed %d sds_num %d\n", __func__, state->speed, sds_num);
 
 	reg = sw_r32(priv->r->mac_force_mode_ctrl(port));
 	pr_info("%s reading FORCE_MODE_CTRL: %08x\n", __func__, reg);
@@ -1045,7 +1021,7 @@ static void rtldsa_poll_counters(struct work_struct *work)
 	struct rtldsa_counter_state *counters;
 
 	for (int i = 0; i < priv->cpu_port; i++) {
-		if (!priv->ports[i].phy)
+		if (!priv->ports[i].phy && !priv->pcs[i])
 			continue;
 
 		counters = &priv->ports[i].counters;
@@ -1064,7 +1040,7 @@ static void rtldsa_init_counters(struct rtl838x_switch_priv *priv)
 	struct rtldsa_counter_state *counters;
 
 	for (int i = 0; i < priv->cpu_port; i++) {
-		if (!priv->ports[i].phy)
+		if (!priv->ports[i].phy && !priv->pcs[i])
 			continue;
 
 		counters = &priv->ports[i].counters;
@@ -1402,7 +1378,7 @@ static int rtldsa_port_enable(struct dsa_switch *ds, int port, struct phy_device
 	/* add port to switch mask of CPU_PORT */
 	priv->r->traffic_enable(priv->cpu_port, port);
 
-	if (priv->is_lagmember[port]) {
+	if (priv->lag_non_primary & BIT_ULL(port)) {
 		pr_debug("%s: %d is lag slave. ignore\n", __func__, port);
 		return 0;
 	}
@@ -1415,9 +1391,6 @@ static int rtldsa_port_enable(struct dsa_switch *ds, int port, struct phy_device
 		sw_w32_mask(0, BIT(port), RTL930X_L2_PORT_SABLK_CTRL);
 		sw_w32_mask(0, BIT(port), RTL930X_L2_PORT_DABLK_CTRL);
 	}
-
-	if (priv->ports[port].sds_num < 0)
-		priv->ports[port].sds_num = rtl93xx_get_sds(phydev);
 
 	return 0;
 }
@@ -1506,7 +1479,7 @@ static void rtldsa_update_port_member(struct rtl838x_switch_priv *priv, int port
 		if (!dsa_port_offloads_bridge_dev(other_dp, bridge_dev))
 			continue;
 
-		if (join && priv->is_lagmember[other_port])
+		if (join && priv->lag_non_primary & BIT_ULL(other_port))
 			continue;
 
 		isolated = p->isolated && other_p->isolated;
@@ -1535,7 +1508,7 @@ static int rtldsa_port_bridge_join(struct dsa_switch *ds, int port, struct dsa_b
 
 	pr_debug("%s %x: %d", __func__, (u32)priv, port);
 
-	if (priv->is_lagmember[port]) {
+	if (priv->lag_non_primary & BIT_ULL(port)) {
 		pr_debug("%s: %d is lag slave. ignore\n", __func__, port);
 		return 0;
 	}
@@ -1967,7 +1940,7 @@ static int rtl83xx_port_fdb_add(struct dsa_switch *ds, int port,
 	int err = 0, idx;
 	u64 seed = priv->r->l2_hash_seed(mac, vid);
 
-	if (priv->is_lagmember[port]) {
+	if (priv->lag_non_primary & BIT_ULL(port)) {
 		pr_debug("%s: %d is lag slave. ignore\n", __func__, port);
 		return 0;
 	}
@@ -2109,7 +2082,7 @@ static int rtl83xx_port_mdb_add(struct dsa_switch *ds, int port,
 
 	pr_debug("In %s port %d, mac %llx, vid: %d\n", __func__, port, mac, vid);
 
-	if (priv->is_lagmember[port]) {
+	if (priv->lag_non_primary & BIT_ULL(port)) {
 		pr_debug("%s: %d is lag slave. ignore\n", __func__, port);
 		return -EINVAL;
 	}
@@ -2189,7 +2162,7 @@ static int rtl83xx_port_mdb_del(struct dsa_switch *ds, int port,
 
 	pr_debug("In %s, port %d, mac %llx, vid: %d\n", __func__, port, mac, vid);
 
-	if (priv->is_lagmember[port]) {
+	if (priv->lag_non_primary & BIT_ULL(port)) {
 		pr_info("%s: %d is lag slave. ignore\n", __func__, port);
 		return 0;
 	}
@@ -2427,34 +2400,32 @@ static int rtl83xx_port_lag_join(struct dsa_switch *ds,
 				  struct netlink_ext_ack *extack)
 {
 	struct rtl838x_switch_priv *priv = ds->priv;
-	int i, err = 0;
+	int err = 0;
+	int group;
 
 	if (!rtl83xx_lag_can_offload(ds, lag.dev, info))
 		return -EOPNOTSUPP;
 
 	mutex_lock(&priv->reg_mutex);
 
-	for (i = 0; i < priv->n_lags; i++) {
-		if ((!priv->lag_devs[i]) || (priv->lag_devs[i] == lag.dev))
-			break;
-	}
 	if (port >= priv->cpu_port) {
 		err = -EINVAL;
 		goto out;
 	}
-	pr_info("port_lag_join: group %d, port %d\n",i, port);
-	if (!priv->lag_devs[i])
-		priv->lag_devs[i] = lag.dev;
 
-	if (priv->lag_primary[i] == -1) {
-		priv->lag_primary[i] = port;
-	} else
-		priv->is_lagmember[port] = 1;
+	group = dsa_lag_id(ds->dst, lag.dev);
 
-	priv->lagmembers |= (1ULL << port);
+	pr_info("port_lag_join: group %d, port %d\n", group, port);
+
+	if (priv->lag_primary[group] == -1)
+		priv->lag_primary[group] = port;
+	else
+		priv->lag_non_primary |= BIT_ULL(port);
+
+	priv->lagmembers |= BIT_ULL(port);
 
 	pr_debug("lag_members = %llX\n", priv->lagmembers);
-	err = rtl83xx_lag_add(priv->ds, i, port, info);
+	err = rtl83xx_lag_add(priv->ds, group, port, info);
 	if (err) {
 		err = -EINVAL;
 		goto out;
@@ -2469,19 +2440,14 @@ out:
 static int rtl83xx_port_lag_leave(struct dsa_switch *ds, int port,
 				  struct dsa_lag lag)
 {
-	int i, group = -1, err;
+	int group, err;
 	struct rtl838x_switch_priv *priv = ds->priv;
 
 	mutex_lock(&priv->reg_mutex);
-	for (i = 0; i < priv->n_lags; i++) {
-		if (priv->lags_port_members[i] & BIT_ULL(port)) {
-			group = i;
-			break;
-		}
-	}
 
+	group = dsa_lag_id(ds->dst, lag.dev);
 	if (group == -1) {
-		pr_info("port_lag_leave: port %d is not a member\n", port);
+		pr_info("port_lag_leave: group %d not set\n", port);
 		err = -EINVAL;
 		goto out;
 	}
@@ -2491,17 +2457,15 @@ static int rtl83xx_port_lag_leave(struct dsa_switch *ds, int port,
 		goto out;
 	}
 	pr_info("port_lag_del: group %d, port %d\n",group, port);
-	priv->lagmembers &=~ (1ULL << port);
-	priv->lag_primary[i] = -1;
-	priv->is_lagmember[port] = 0;
+	priv->lagmembers &= ~BIT_ULL(port);
+	priv->lag_primary[group] = -1;
+	priv->lag_non_primary &= ~BIT_ULL(port);
 	pr_debug("lag_members = %llX\n", priv->lagmembers);
 	err = rtl83xx_lag_del(priv->ds, group, port);
 	if (err) {
 		err = -EINVAL;
 		goto out;
 	}
-	if (!priv->lags_port_members[i])
-		priv->lag_devs[i] = NULL;
 
 out:
 	mutex_unlock(&priv->reg_mutex);
@@ -2520,6 +2484,118 @@ static int rtldsa_phy_write(struct dsa_switch *ds, int addr, int regnum, u16 val
 	struct rtl838x_switch_priv *priv = ds->priv;
 
 	return mdiobus_write_nested(priv->parent_bus, addr, regnum, val);
+}
+
+static const struct flow_action_entry *rtldsa_rate_policy_extract(struct flow_cls_offload *cls)
+{
+	struct flow_rule *rule;
+
+	/* only simple rules with a single action are supported */
+	rule = flow_cls_offload_flow_rule(cls);
+
+	if (!flow_action_basic_hw_stats_check(&cls->rule->action,
+					      cls->common.extack))
+		return NULL;
+
+	if (!flow_offload_has_one_action(&rule->action))
+		return NULL;
+
+	return &rule->action.entries[0];
+}
+
+static bool rtldsa_port_rate_police_validate(const struct flow_action_entry *act)
+{
+	if (!act)
+		return false;
+
+	/* only allow action which just limit rate with by dropping packets */
+	if (act->id != FLOW_ACTION_POLICE)
+		return false;
+
+	if (act->police.rate_pkt_ps > 0)
+		return false;
+
+	if (act->police.exceed.act_id != FLOW_ACTION_DROP)
+		return false;
+
+	if (act->police.notexceed.act_id != FLOW_ACTION_ACCEPT)
+		return false;
+
+	return true;
+}
+
+static int rtldsa_cls_flower_add(struct dsa_switch *ds, int port,
+				 struct flow_cls_offload *cls,
+				 bool ingress)
+{
+	struct rtl838x_switch_priv *priv = ds->priv;
+	struct rtl838x_port *p = &priv->ports[port];
+	const struct flow_action_entry *act;
+	int ret;
+
+	if (!priv->r->port_rate_police_add)
+		return -EOPNOTSUPP;
+
+	/* the single action must be a rate/bandwidth limiter */
+	act = rtldsa_rate_policy_extract(cls);
+
+	if (!rtldsa_port_rate_police_validate(act))
+		return -EOPNOTSUPP;
+
+	mutex_lock(&priv->reg_mutex);
+
+	/* only allow one offloaded police for ingress/egress */
+	if (ingress && p->rate_police_ingress) {
+		ret = -EOPNOTSUPP;
+		goto unlock;
+	}
+
+	if (!ingress && p->rate_police_egress) {
+		ret = -EOPNOTSUPP;
+		goto unlock;
+	}
+
+	ret = priv->r->port_rate_police_add(ds, port, act, ingress);
+	if (ret < 0)
+		goto unlock;
+
+	if (ingress)
+		p->rate_police_ingress = true;
+	else
+		p->rate_police_egress = true;
+
+unlock:
+	mutex_unlock(&priv->reg_mutex);
+
+	return ret;
+}
+
+static int rtldsa_cls_flower_del(struct dsa_switch *ds, int port,
+				 struct flow_cls_offload *cls,
+				 bool ingress)
+{
+	struct rtl838x_switch_priv *priv = ds->priv;
+	struct rtl838x_port *p = &priv->ports[port];
+	int ret;
+
+	if (!priv->r->port_rate_police_del)
+		return -EOPNOTSUPP;
+
+	mutex_lock(&priv->reg_mutex);
+
+	ret = priv->r->port_rate_police_del(ds, port, cls, ingress);
+	if (ret < 0)
+		goto unlock;
+
+	if (ingress)
+		p->rate_police_ingress = false;
+	else
+		p->rate_police_egress = false;
+
+unlock:
+	mutex_unlock(&priv->reg_mutex);
+
+	return ret;
 }
 
 const struct dsa_switch_ops rtl83xx_switch_ops = {
@@ -2634,4 +2710,7 @@ const struct dsa_switch_ops rtl93xx_switch_ops = {
 
 	.port_pre_bridge_flags	= rtldsa_port_pre_bridge_flags,
 	.port_bridge_flags	= rtl83xx_port_bridge_flags,
+
+	.cls_flower_add		= rtldsa_cls_flower_add,
+	.cls_flower_del		= rtldsa_cls_flower_del,
 };
