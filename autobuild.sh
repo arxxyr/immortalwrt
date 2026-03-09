@@ -6,6 +6,10 @@ shopt -s nullglob
 export FORCE_UNSAFE_CONFIGURE=1
 export CLEAN_TARGET_BUILD_STATE="${CLEAN_TARGET_BUILD_STATE:-1}"
 export WSL_STRIP_WINDOWS_PATH="${WSL_STRIP_WINDOWS_PATH:-1}"
+export ENABLE_NETWORK_PROXY="${ENABLE_NETWORK_PROXY:-1}"
+export PROXY_PORT="${PROXY_PORT:-10808}"
+export PROXY_HOST="${PROXY_HOST:-}"
+export NO_PROXY_LIST="${NO_PROXY_LIST:-127.0.0.1,localhost}"
 
 is_wsl() {
     [[ -n "${WSL_INTEROP:-}" ]] || [[ -n "${WSL_DISTRO_NAME:-}" ]] || grep -qiE '(microsoft|wsl)' /proc/version 2>/dev/null
@@ -19,6 +23,58 @@ prepare_env() {
             echo "[env] normalized PATH for WSL"
         fi
     fi
+}
+
+get_wsl_windows_host_ip() {
+    ip route show default 2>/dev/null | awk '/default/ { print $3; exit }'
+}
+
+resolve_proxy_host() {
+    if [[ -n "$PROXY_HOST" ]]; then
+        printf '%s\n' "$PROXY_HOST"
+        return
+    fi
+
+    if is_wsl; then
+        get_wsl_windows_host_ip
+        return
+    fi
+
+    printf '%s\n' '127.0.0.1'
+}
+
+prepare_proxy_env() {
+    local proxy_host http_proxy_url https_proxy_url all_proxy_url
+
+    if [[ "$ENABLE_NETWORK_PROXY" != "1" ]]; then
+        return
+    fi
+
+    proxy_host="$(resolve_proxy_host)"
+
+    if [[ -z "$proxy_host" ]]; then
+        echo "[proxy] failed to determine proxy host" >&2
+        exit 1
+    fi
+
+    http_proxy_url="${HTTP_PROXY_URL:-http://${proxy_host}:${PROXY_PORT}}"
+    https_proxy_url="${HTTPS_PROXY_URL:-http://${proxy_host}:${PROXY_PORT}}"
+    all_proxy_url="${ALL_PROXY_URL:-socks5://${proxy_host}:${PROXY_PORT}}"
+
+    export http_proxy="$http_proxy_url"
+    export https_proxy="$https_proxy_url"
+    export all_proxy="$all_proxy_url"
+    export no_proxy="$NO_PROXY_LIST"
+
+    export HTTP_PROXY="$http_proxy"
+    export HTTPS_PROXY="$https_proxy"
+    export ALL_PROXY="$all_proxy"
+    export NO_PROXY="$no_proxy"
+
+    echo "[proxy] host=${proxy_host} port=${PROXY_PORT}"
+    echo "[proxy] http_proxy=${http_proxy}"
+    echo "[proxy] https_proxy=${https_proxy}"
+    echo "[proxy] all_proxy=${all_proxy}"
 }
 
 read_config_string() {
@@ -82,32 +138,44 @@ clean_target_build_state() {
         build_dir/toolchain-"${arch}"_*_"${libc}"
 }
 
-run_make_download() {
-    if command -v proxychains4 >/dev/null 2>&1; then
-        proxychains4 make -j"$(nproc)" download
-        return
-    fi
-
-    if command -v proxychains >/dev/null 2>&1; then
-        proxychains make -j"$(nproc)" download
-        return
-    fi
-
-    make -j"$(nproc)" download
+is_ssh_remote_url() {
+    local url="${1:-}"
+    [[ "$url" == git@* || "$url" == ssh://* ]]
 }
 
-prepare_env
-clean_common_state
+run_git_pull() {
+    local origin_url=""
 
-if [[ "$CLEAN_TARGET_BUILD_STATE" == "1" ]]; then
-    clean_target_build_state
-fi
+    origin_url="$(git remote get-url origin 2>/dev/null || true)"
 
-git pull
-sed -i 's/#src-git helloworld/src-git helloworld/g' ./feeds.conf.default
-./scripts/feeds update -a
-./scripts/feeds install -a
-git checkout -- .config
-make defconfig
-run_make_download
-make -j"$(nproc)" || make -j1 V=s
+    if is_ssh_remote_url "$origin_url"; then
+        echo "[git] origin uses ssh, run git pull directly"
+        echo "[git] origin=${origin_url}"
+        git pull
+        return
+    fi
+
+    echo "[git] origin uses non-ssh remote, run git pull with current environment"
+    git pull
+}
+
+main() {
+    prepare_env
+    prepare_proxy_env
+    clean_common_state
+
+    if [[ "$CLEAN_TARGET_BUILD_STATE" == "1" ]]; then
+        clean_target_build_state
+    fi
+
+    run_git_pull
+    sed -i 's/#src-git helloworld/src-git helloworld/g' ./feeds.conf.default
+    ./scripts/feeds update -a
+    ./scripts/feeds install -a
+    git checkout -- .config
+    make defconfig
+    make -j"$(nproc)" download
+    make -j"$(nproc)" || make -j1 V=s
+}
+
+main "$@"
