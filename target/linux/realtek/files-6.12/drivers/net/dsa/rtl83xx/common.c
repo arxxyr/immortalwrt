@@ -3,6 +3,7 @@
 #include <linux/of_mdio.h>
 #include <linux/of_platform.h>
 #include <net/arp.h>
+#include <net/lag.h>
 #include <net/nexthop.h>
 #include <net/neighbour.h>
 #include <net/netevent.h>
@@ -12,7 +13,7 @@
 #include <linux/platform_device.h>
 #include <linux/rhashtable.h>
 #include <linux/of_net.h>
-#include <asm/mach-rtl838x/mach-rtl83xx.h>
+#include <asm/mach-rtl-otto/mach-rtl-otto.h>
 
 #include "rtl83xx.h"
 
@@ -287,7 +288,6 @@ static int rtl83xx_mdio_probe(struct rtl838x_switch_priv *priv)
 	led_node = of_find_compatible_node(NULL, NULL, "realtek,rtl9300-leds");
 
 	for_each_node_by_name(dn, "port") {
-		phy_interface_t interface;
 		u32 led_set;
 		char led_set_str[16] = {0};
 
@@ -305,23 +305,14 @@ static int rtl83xx_mdio_probe(struct rtl838x_switch_priv *priv)
 		}
 
 		if (pcs_node) {
-			priv->pcs[pn] = rtpcs_create(priv->dev, pcs_node, pn);
-			if (IS_ERR(priv->pcs[pn])) {
+			priv->ports[pn].pcs = rtpcs_create(priv->dev, pcs_node, pn);
+			if (IS_ERR(priv->ports[pn].pcs)) {
 				dev_err(priv->dev, "port %u failed to create PCS instance: %ld\n",
-					pn, PTR_ERR(priv->pcs[pn]));
-				priv->pcs[pn] = NULL;
+					pn, PTR_ERR(priv->ports[pn].pcs));
+				priv->ports[pn].pcs = NULL;
 				continue;
 			}
 		}
-
-		if (of_get_phy_mode(dn, &interface))
-			interface = PHY_INTERFACE_MODE_NA;
-		if (interface == PHY_INTERFACE_MODE_10G_QXGMII)
-			priv->ports[pn].is2G5 = true;
-		if (interface == PHY_INTERFACE_MODE_USXGMII)
-			priv->ports[pn].is2G5 = priv->ports[pn].is10G = true;
-		if (interface == PHY_INTERFACE_MODE_10GBASER)
-			priv->ports[pn].is10G = true;
 
 		priv->ports[pn].leds_on_this_port = 0;
 		if (led_node) {
@@ -338,7 +329,7 @@ static int rtl83xx_mdio_probe(struct rtl838x_switch_priv *priv)
 		}
 
 		if (!phy_node) {
-			if (priv->pcs[pn])
+			if (priv->ports[pn].pcs)
 				priv->ports[pn].phy_is_integrated = true;
 
 			continue;
@@ -394,9 +385,8 @@ static int rtl83xx_get_l2aging(struct rtl838x_switch_priv *priv)
 int rtl83xx_lag_add(struct dsa_switch *ds, int group, int port, struct netdev_lag_upper_info *info)
 {
 	struct rtl838x_switch_priv *priv = ds->priv;
+	int ret;
 	int i;
-	u32 algomsk = 0;
-	u32 algoidx = 0;
 
 	for (i = 0; i < priv->ds->num_lag_ids; i++) {
 		if (priv->lags_port_members[i] & BIT_ULL(port))
@@ -407,31 +397,16 @@ int rtl83xx_lag_add(struct dsa_switch *ds, int group, int port, struct netdev_la
 		return -ENOSPC;
 	}
 
-	switch (info->hash_type) {
-	case NETDEV_LAG_HASH_L2:
-		algomsk |= TRUNK_DISTRIBUTION_ALGO_DMAC_BIT;
-		algomsk |= TRUNK_DISTRIBUTION_ALGO_SMAC_BIT;
-	break;
-	case NETDEV_LAG_HASH_L23:
-		algomsk |= TRUNK_DISTRIBUTION_ALGO_DMAC_BIT;
-		algomsk |= TRUNK_DISTRIBUTION_ALGO_SMAC_BIT;
-		algomsk |= TRUNK_DISTRIBUTION_ALGO_SIP_BIT; /* source ip */
-		algomsk |= TRUNK_DISTRIBUTION_ALGO_DIP_BIT; /* dest ip */
-		algoidx = 1;
-	break;
-	case NETDEV_LAG_HASH_L34:
-		algomsk |= TRUNK_DISTRIBUTION_ALGO_SRC_L4PORT_BIT; /* sport */
-		algomsk |= TRUNK_DISTRIBUTION_ALGO_DST_L4PORT_BIT; /* dport */
-		algomsk |= TRUNK_DISTRIBUTION_ALGO_SIP_BIT; /* source ip */
-		algomsk |= TRUNK_DISTRIBUTION_ALGO_DIP_BIT; /* dest ip */
-		algoidx = 2;
-	break;
-	default:
-		algomsk |= 0x7f;
+	if (priv->r->lag_setup_algomask) {
+		ret = priv->r->lag_setup_algomask(priv, group, info);
+		if (ret)
+			return ret;
 	}
-	priv->r->set_distribution_algorithm(group, algoidx, algomsk);
-	priv->r->mask_port_reg_be(0, BIT_ULL(port), priv->r->trk_mbr_ctr(group));
-	priv->lags_port_members[group] |= BIT_ULL(port);
+
+	ret = priv->r->lag_set_port_members(priv, group,
+					    priv->lags_port_members[group] | BIT_ULL(port), info);
+	if (ret)
+		return ret;
 
 	pr_info("%s: Added port %d to LAG %d. Members now %016llx.\n",
 		__func__, port, group, priv->lags_port_members[group]);
@@ -443,6 +418,7 @@ int rtl83xx_lag_add(struct dsa_switch *ds, int group, int port, struct netdev_la
 int rtl83xx_lag_del(struct dsa_switch *ds, int group, int port)
 {
 	struct rtl838x_switch_priv *priv = ds->priv;
+	int ret;
 
 	if (group >= priv->ds->num_lag_ids) {
 		pr_err("%s: LAG %d invalid.\n", __func__, group);
@@ -454,12 +430,248 @@ int rtl83xx_lag_del(struct dsa_switch *ds, int group, int port)
 		return -ENOSPC;
 	}
 
-	/* 0x7f algo mask all */
-	priv->r->mask_port_reg_be(BIT_ULL(port), 0, priv->r->trk_mbr_ctr(group));
-	priv->lags_port_members[group] &= ~BIT_ULL(port);
+	/* Don't touch hash mask bits, as only the port might be removed from
+	 * the LAG group. This means the lag group stays valid with existing
+	 * mask algo bits. If there are no lag members left, then
+	 * rtl83xx_lag_add will reconfigure hash mask when new LAG group is
+	 * created.
+	 */
+	ret = priv->r->lag_set_port_members(priv, group,
+					    priv->lags_port_members[group] & ~BIT_ULL(port),
+					    NULL);
+	if (ret)
+		return ret;
 
 	pr_info("%s: Removed port %d from LAG %d. Members now %016llx.\n",
 		__func__, port, group, priv->lags_port_members[group]);
+
+	return 0;
+}
+
+int rtldsa_93xx_lag_set_distribution_algorithm(struct rtl838x_switch_priv *priv,
+					       int group, int algoidx, u32 algomsk)
+{
+	bool is_l3 = false;
+	u32 newmask = 0;
+
+	if (algomsk & TRUNK_DISTRIBUTION_ALGO_SIP_BIT) {
+		is_l3 = true;
+		newmask |= TRUNK_DISTRIBUTION_ALGO_L3_SIP_BIT;
+	}
+	if (algomsk & TRUNK_DISTRIBUTION_ALGO_DIP_BIT) {
+		is_l3 = true;
+		newmask |= TRUNK_DISTRIBUTION_ALGO_L3_DIP_BIT;
+	}
+	if (algomsk & TRUNK_DISTRIBUTION_ALGO_SRC_L4PORT_BIT) {
+		is_l3 = true;
+		newmask |= TRUNK_DISTRIBUTION_ALGO_L3_SRC_L4PORT_BIT;
+	}
+
+	if (algomsk & TRUNK_DISTRIBUTION_ALGO_DST_L4PORT_BIT) {
+		is_l3 = true;
+		newmask |= TRUNK_DISTRIBUTION_ALGO_L3_DST_L4PORT_BIT;
+	}
+
+	if (is_l3) {
+		if (algomsk & TRUNK_DISTRIBUTION_ALGO_SPA_BIT)
+			newmask |= TRUNK_DISTRIBUTION_ALGO_L3_SPA_BIT;
+		if (algomsk & TRUNK_DISTRIBUTION_ALGO_SMAC_BIT)
+			newmask |= TRUNK_DISTRIBUTION_ALGO_L3_SMAC_BIT;
+		if (algomsk & TRUNK_DISTRIBUTION_ALGO_DMAC_BIT)
+			newmask |= TRUNK_DISTRIBUTION_ALGO_L3_DMAC_BIT;
+		if (algomsk & TRUNK_DISTRIBUTION_ALGO_VLAN_BIT)
+			newmask |= TRUNK_DISTRIBUTION_ALGO_L3_VLAN_BIT;
+	} else {
+		if (algomsk & TRUNK_DISTRIBUTION_ALGO_SPA_BIT)
+			newmask |= TRUNK_DISTRIBUTION_ALGO_L2_SPA_BIT;
+		if (algomsk & TRUNK_DISTRIBUTION_ALGO_SMAC_BIT)
+			newmask |= TRUNK_DISTRIBUTION_ALGO_L2_SMAC_BIT;
+		if (algomsk & TRUNK_DISTRIBUTION_ALGO_DMAC_BIT)
+			newmask |= TRUNK_DISTRIBUTION_ALGO_L2_DMAC_BIT;
+		if (algomsk & TRUNK_DISTRIBUTION_ALGO_VLAN_BIT)
+			newmask |= TRUNK_DISTRIBUTION_ALGO_L2_VLAN_BIT;
+	}
+
+	sw_w32(newmask, priv->r->trk_hash_ctrl + (algoidx << 2));
+
+	return 0;
+}
+
+int rtldsa_83xx_lag_setup_algomask(struct rtl838x_switch_priv *priv, int group,
+				   struct netdev_lag_upper_info *info)
+{
+	u32 algomsk = 0;
+	u32 algoidx = 0;
+
+	switch (info->hash_type) {
+	case NETDEV_LAG_HASH_L2:
+		algomsk |= TRUNK_DISTRIBUTION_ALGO_DMAC_BIT;
+		algomsk |= TRUNK_DISTRIBUTION_ALGO_SMAC_BIT;
+		break;
+	case NETDEV_LAG_HASH_L23:
+		algomsk |= TRUNK_DISTRIBUTION_ALGO_DMAC_BIT;
+		algomsk |= TRUNK_DISTRIBUTION_ALGO_SMAC_BIT;
+		algomsk |= TRUNK_DISTRIBUTION_ALGO_SIP_BIT; /* source ip */
+		algomsk |= TRUNK_DISTRIBUTION_ALGO_DIP_BIT; /* dest ip */
+		algoidx = 1;
+		break;
+	case NETDEV_LAG_HASH_L34:
+		algomsk |= TRUNK_DISTRIBUTION_ALGO_SRC_L4PORT_BIT; /* sport */
+		algomsk |= TRUNK_DISTRIBUTION_ALGO_DST_L4PORT_BIT; /* dport */
+		algomsk |= TRUNK_DISTRIBUTION_ALGO_SIP_BIT; /* source ip */
+		algomsk |= TRUNK_DISTRIBUTION_ALGO_DIP_BIT; /* dest ip */
+		algoidx = 2;
+		break;
+	default:
+		algomsk |= TRUNK_DISTRIBUTION_ALGO_MASKALL;
+	}
+
+	return priv->r->lag_set_distribution_algorithm(priv, group, algoidx, algomsk);
+}
+
+static int rtldsa_93xx_lag_set_group2ports(struct rtl838x_switch_priv *priv, int group,
+					   struct netdev_lag_upper_info *info)
+{
+	DECLARE_BITMAP(ports, ARRAY_SIZE(priv->ports));
+	struct rtldsa_93xx_lag_entry e;
+	unsigned int table_pos = 0;
+	u8 num_of_lag_ports = 0;
+	u8 group_ports[8];
+	u32 data[3];
+	int i;
+
+	/* Read lag table using Table control register 2 */
+	struct table_reg *r = priv->r->lag_table();
+
+	rtl_table_read(r, group);
+
+	bitmap_clear(ports, 0, ARRAY_SIZE(priv->ports));
+	bitmap_from_arr64(ports, &priv->lags_port_members[group],
+			  ARRAY_SIZE(priv->ports));
+
+	for (i = 0; i < 3; i++)
+		data[i] = sw_r32(rtl_table_data(r, i));
+
+	priv->r->lag_fill_data(data, &e);
+
+	num_of_lag_ports = bitmap_weight(ports, ARRAY_SIZE(priv->ports));
+	if (num_of_lag_ports > ARRAY_SIZE(group_ports)) {
+		pr_err("%s: Number of LAG ports too high: %u", __func__,
+		       num_of_lag_ports);
+
+		return -ENOSPC;
+	}
+
+	memset(group_ports, 0x3f, sizeof(group_ports));
+
+	table_pos = 0;
+	for_each_set_bit(i, ports, ARRAY_SIZE(priv->ports)) {
+		struct net_device *lag_slave = priv->ports[i].dp->user;
+
+		if (lag_slave && !net_lag_port_dev_txable(lag_slave))
+			continue;
+
+		group_ports[table_pos] = i;
+		table_pos++;
+	}
+
+	/* Remove tx disabled ports */
+	num_of_lag_ports = table_pos;
+
+	e.trk_dev0 = 0;
+	e.trk_port0 = group_ports[0];
+	e.trk_dev1 = 0;
+	e.trk_port1 = group_ports[1];
+	e.trk_dev2 = 0;
+	e.trk_port2 = group_ports[2];
+	e.trk_dev3 = 0;
+	e.trk_port3 = group_ports[3];
+	e.trk_dev4 = 0;
+	e.trk_port4 = group_ports[4];
+	e.trk_dev5 = 0;
+	e.trk_port5 = group_ports[5];
+	e.trk_dev6 = 0;
+	e.trk_port6 = group_ports[6];
+	e.trk_dev7 = 0;
+	e.trk_port7 = group_ports[7];
+
+	e.num_tx_candi = num_of_lag_ports;
+
+	/* set hash_mask_idx to 0 if we are deleting lag group */
+	if (info) {
+		if (info->hash_type == NETDEV_LAG_HASH_L2) {
+			e.l2_hash_mask_idx = RTL93XX_HASH_MASK_INDEX_L2;
+			e.ip4_hash_mask_idx = RTL93XX_HASH_MASK_INDEX_L2;
+			e.ip6_hash_mask_idx = RTL93XX_HASH_MASK_INDEX_L2;
+		} else if (info->hash_type == NETDEV_LAG_HASH_L23) {
+			e.l2_hash_mask_idx = RTL93XX_HASH_MASK_INDEX_L23;
+			e.ip4_hash_mask_idx = RTL93XX_HASH_MASK_INDEX_L23;
+			e.ip6_hash_mask_idx = RTL93XX_HASH_MASK_INDEX_L23;
+		} else {
+			return -EOPNOTSUPP;
+		}
+	}
+
+	priv->r->lag_write_data(data, &e);
+
+	for (i = 0; i < 3; i++)
+		sw_w32(data[i], rtl_table_data(r, i));
+	rtl_table_write(r, group);
+	rtl_table_release(r);
+
+	return 0;
+}
+
+static inline void rtldsa_93xx_lag_set_local_group2ports(struct rtl838x_switch_priv *priv, int group,
+						  u64 ports)
+{
+	priv->r->set_port_reg_be(ports, priv->r->trk_mbr_ctr(group));
+}
+
+int rtldsa_93xx_lag_set_port_members(struct rtl838x_switch_priv *priv, int group,
+				     u64 members, struct netdev_lag_upper_info *info)
+{
+	DECLARE_BITMAP(affected_members, ARRAY_SIZE(priv->ports));
+	bool valid_group;
+	u64 old_members;
+	u64 affected;
+	size_t port;
+	int ret;
+
+	/* calculate modifications of the LAG group */
+	old_members = priv->lags_port_members[group];
+	priv->lags_port_members[group] = members;
+
+	affected = old_members | priv->lags_port_members[group];
+
+	bitmap_clear(affected_members, 0, ARRAY_SIZE(priv->ports));
+	bitmap_from_arr64(affected_members, &affected, BITS_PER_TYPE(affected));
+
+	valid_group = __sw_hweight64(priv->lags_port_members[group]);
+
+	/* apply global group and port settings */
+	ret = rtldsa_93xx_lag_set_group2ports(priv, group, info);
+	if (ret)
+		return ret;
+
+	for_each_set_bit(port, affected_members, ARRAY_SIZE(priv->ports)) {
+		bool valid = priv->lags_port_members[group] & BIT_ULL(port);
+
+		priv->r->lag_set_port2group(group, port, valid);
+	}
+
+	/* apply local group and port settings */
+	priv->r->lag_set_local_group_id(group, group, valid_group);
+	rtldsa_93xx_lag_set_local_group2ports(priv, group, priv->lags_port_members[group]);
+
+	for_each_set_bit(port, affected_members, ARRAY_SIZE(priv->ports)) {
+		bool valid = priv->lags_port_members[group] & BIT_ULL(port);
+
+		priv->r->lag_set_local_port2group(group, port, valid);
+	}
+
+	/* write lag table (and maybe additional information) to SRAM */
+	priv->r->lag_sync_tables();
 
 	return 0;
 }
@@ -473,7 +685,7 @@ int rtl83xx_lag_del(struct dsa_switch *ds, int group, int port)
 // 	mutex_lock(&priv->reg_mutex);
 
 // 	idx = find_first_zero_bit(priv->octet_cntr_use_bm, MAX_COUNTERS);
-// 	if (idx >= priv->n_counters) {
+// 	if (idx >= priv->r->n_counters) {
 // 		mutex_unlock(&priv->reg_mutex);
 // 		return -1;
 // 	}
@@ -499,9 +711,9 @@ int rtl83xx_packet_cntr_alloc(struct rtl838x_switch_priv *priv)
 	 * a 0-bit means the counter is already allocated (for octets)
 	 */
 	idx = find_first_bit(priv->packet_cntr_use_bm, MAX_COUNTERS * 2);
-	if (idx >= priv->n_counters * 2) {
+	if (idx >= priv->r->n_counters * 2) {
 		j = find_first_zero_bit(priv->octet_cntr_use_bm, MAX_COUNTERS);
-		if (j >= priv->n_counters) {
+		if (j >= priv->r->n_counters) {
 			mutex_unlock(&priv->reg_mutex);
 			return -1;
 		}
@@ -575,7 +787,7 @@ static int rtl83xx_l2_nexthop_add(struct rtl838x_switch_priv *priv, struct rtl83
 		e.block_sa = false;
 		e.suspended = false;
 		e.age = 0;			/* With port-ignore */
-		e.port = priv->port_ignore;
+		e.port = priv->r->port_ignore;
 		u64_to_ether_addr(nh->mac, &e.mac[0]);
 	}
 	e.next_hop = true;
@@ -665,7 +877,7 @@ static int rtl83xx_l3_nexthop_update(struct rtl838x_switch_priv *priv,  __be32 i
 		pr_debug("Route with id %d to %pI4 / %d\n", r->id, &r->dst_ip, r->prefix_len);
 
 		r->nh.mac = r->nh.gw = mac;
-		r->nh.port = priv->port_ignore;
+		r->nh.port = priv->r->port_ignore;
 		r->nh.id = r->id;
 
 		/* Do we need to explicitly add a DMAC entry with the route's nh index? */
@@ -1097,7 +1309,7 @@ static int rtldsa_fib4_add(struct rtl838x_switch_priv *priv,
 			int slot;
 
 			route->nh.mac = mac;
-			route->nh.port = priv->port_ignore;
+			route->nh.port = priv->r->port_ignore;
 			route->attr.valid = true;
 			route->attr.action = ROUTE_ACT_TRAP2CPU;
 			route->attr.type = 0;
@@ -1332,7 +1544,7 @@ static int rtldsa_ethernet_loaded(struct platform_device *pdev)
 	struct device_node *ports, *port;
 	int ret = -EPROBE_DEFER;
 
-	ports = of_get_child_by_name(dn, "ports");
+	ports = of_get_child_by_name(dn, "ethernet-ports");
 	if (!ports)
 		return -ENODEV;
 
@@ -1411,64 +1623,46 @@ static int rtl83xx_sw_probe(struct platform_device *pdev)
 		priv->cpu_port = RTL838X_CPU_PORT;
 		priv->port_mask = 0x1f;
 		priv->port_width = 1;
-		priv->irq_mask = 0x0FFFFFFF;
-		priv->ds->num_ports = RTL838X_CPU_PORT + 1;
 		priv->fib_entries = 8192;
 		priv->ds->num_lag_ids = 8;
 		priv->l2_bucket_size = 4;
 		priv->n_mst = 64;
-		priv->n_pie_blocks = 12;
-		priv->port_ignore = 0x1f;
-		priv->n_counters = 128;
 		break;
 	case RTL8390_FAMILY_ID:
 		priv->ds->ops = &rtldsa_83xx_switch_ops;
 		priv->cpu_port = RTL839X_CPU_PORT;
 		priv->port_mask = 0x3f;
 		priv->port_width = 2;
-		priv->irq_mask = 0xFFFFFFFFFFFFFULL;
-		priv->ds->num_ports = RTL839X_CPU_PORT + 1;
 		priv->fib_entries = 16384;
 		priv->ds->num_lag_ids = 16;
 		priv->l2_bucket_size = 4;
 		priv->n_mst = 256;
-		priv->n_pie_blocks = 18;
-		priv->port_ignore = 0x3f;
-		priv->n_counters = 1024;
 		break;
 	case RTL9300_FAMILY_ID:
 		priv->ds->ops = &rtldsa_93xx_switch_ops;
 		priv->cpu_port = RTL930X_CPU_PORT;
 		priv->port_mask = 0x1f;
 		priv->port_width = 1;
-		priv->irq_mask = 0x0FFFFFFF;
-		priv->ds->num_ports = RTL930X_CPU_PORT + 1;
 		priv->fib_entries = 16384;
 		priv->ds->num_lag_ids = 16;
 		sw_w32(0, RTL930X_ST_CTRL);
 		priv->l2_bucket_size = 8;
 		priv->n_mst = 64;
-		priv->n_pie_blocks = 16;
-		priv->port_ignore = 0x3f;
-		priv->n_counters = 2048;
 		break;
 	case RTL9310_FAMILY_ID:
 		priv->ds->ops = &rtldsa_93xx_switch_ops;
 		priv->cpu_port = RTL931X_CPU_PORT;
 		priv->port_mask = 0x3f;
 		priv->port_width = 2;
-		priv->irq_mask = GENMASK_ULL(priv->cpu_port - 1, 0);
-		priv->ds->num_ports = RTL931X_CPU_PORT + 1;
 		priv->fib_entries = 16384;
 		priv->ds->num_lag_ids = 16;
 		sw_w32(0, RTL931x_ST_CTRL);
 		priv->l2_bucket_size = 8;
 		priv->n_mst = 128;
-		priv->n_pie_blocks = 16;
-		priv->port_ignore = 0x3f;
-		priv->n_counters = 2048;
 		break;
 	}
+	priv->ds->num_ports = priv->cpu_port + 1;
+	priv->irq_mask = GENMASK_ULL(priv->cpu_port - 1, 0);
 
 	err = rtl83xx_mdio_probe(priv);
 	if (err) {
@@ -1592,6 +1786,9 @@ static int rtl83xx_sw_probe(struct platform_device *pdev)
 		break;
 	}
 
+	if (priv->r->lag_switch_init)
+		priv->r->lag_switch_init(priv);
+
 	return 0;
 
 err_register_fib_nb:
@@ -1602,6 +1799,30 @@ err_register_switch:
 	destroy_workqueue(priv->wq);
 
 	return err;
+}
+
+void rtldsa_93xx_lag_switch_init(struct rtl838x_switch_priv *priv)
+{
+	u32 trk_ctrlmask = 0;
+	u32 algomask;
+
+	trk_ctrlmask |= RTL93XX_TRK_CTRL_NON_TMN_TUNNEL_HASH_SEL;
+	trk_ctrlmask |= RTL93XX_TRK_CTRL_TRK_STAND_ALONE_MODE;
+	trk_ctrlmask |= RTL93XX_TRK_CTRL_LOCAL_FIRST;
+
+	sw_w32(trk_ctrlmask, priv->r->trk_ctrl);
+
+	/* Setup NETDEV_LAG_HASH_L2 on slot 0 */
+	algomask = TRUNK_DISTRIBUTION_ALGO_SMAC_BIT |
+		   TRUNK_DISTRIBUTION_ALGO_DMAC_BIT;
+	priv->r->lag_set_distribution_algorithm(priv, 0, RTL93XX_HASH_MASK_INDEX_L2, algomask);
+
+	/* Setup NETDEV_LAG_HASH_L23 on slot 1 */
+	algomask = TRUNK_DISTRIBUTION_ALGO_SMAC_BIT |
+		   TRUNK_DISTRIBUTION_ALGO_DMAC_BIT |
+		   TRUNK_DISTRIBUTION_ALGO_SIP_BIT |
+		   TRUNK_DISTRIBUTION_ALGO_DIP_BIT;
+	priv->r->lag_set_distribution_algorithm(priv, 0, RTL93XX_HASH_MASK_INDEX_L23, algomask);
 }
 
 static void rtl83xx_sw_remove(struct platform_device *pdev)
