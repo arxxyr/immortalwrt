@@ -1,0 +1,143 @@
+name: 构建 ImmortalWrt 固件
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+env:
+  FORCE_UNSAFE_CONFIGURE: 1
+  TARGET_BOARD: x86
+  TARGET_SUBTARGET: 64
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 720
+
+    steps:
+      - name: 释放磁盘空间
+        run: |
+          echo "释放前："
+          df -hT /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghcup \
+            /opt/hostedtoolcache \
+            /usr/share/swift \
+            /usr/local/share/powershell \
+            /usr/local/share/chromium
+          sudo docker image prune -a -f 2>/dev/null || true
+          echo "释放后："
+          df -hT /
+
+      - name: 安装编译依赖
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            ack antlr3 asciidoc autoconf automake autopoint binutils bison \
+            build-essential bzip2 ccache clang cmake cpio curl \
+            device-tree-compiler ecj fastjar flex gawk gettext gcc-multilib \
+            g++-multilib git gnutls-dev gperf haveged help2man intltool jq \
+            libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev \
+            libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev \
+            libncursesw5-dev libpython3-dev libreadline-dev libssl-dev \
+            libtool lld llvm lrzsz mkisofs msmtp nano ninja-build p7zip \
+            p7zip-full patch pkgconf python3 python3-pyelftools \
+            python3-setuptools qemu-utils rsync scons squashfs-tools \
+            subversion swig texinfo uglifyjs unzip vim wget xmlto xxd \
+            zlib1g-dev zstd
+
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 配置 ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ env.TARGET_BOARD }}-${{ env.TARGET_SUBTARGET }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ env.TARGET_BOARD }}-${{ env.TARGET_SUBTARGET }}-
+
+      - name: 缓存下载目录
+        uses: actions/cache@v4
+        with:
+          path: dl
+          key: dl-${{ env.TARGET_BOARD }}-${{ env.TARGET_SUBTARGET }}-${{ hashFiles('.config') }}
+          restore-keys: |
+            dl-${{ env.TARGET_BOARD }}-${{ env.TARGET_SUBTARGET }}-
+
+      - name: 启用 ccache
+        run: |
+          echo "CONFIG_CCACHE=y" >> .config
+          ccache --set-config=max_size=5G
+          ccache -z
+
+      - name: 更新并安装 feeds
+        run: |
+          sed -i 's/^#src-git helloworld/src-git helloworld/' feeds.conf.default
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: 生成编译配置
+        run: make defconfig
+
+      - name: 下载源码包
+        run: |
+          make -j$(nproc) download
+          # 删除下载失败的小文件（< 1KB 通常是错误页面）
+          find dl -size -1024c -exec rm -f {} + 2>/dev/null || true
+
+      - name: 编译固件
+        run: |
+          echo "开始编译，线程数: $(nproc)"
+          make -j$(nproc) || make -j1 V=s
+
+      - name: ccache 统计
+        if: always()
+        run: ccache -s
+
+      - name: 整理固件产物
+        id: organize
+        run: |
+          firmware_dir="bin/targets/${TARGET_BOARD}/${TARGET_SUBTARGET}"
+          echo "firmware_dir=${firmware_dir}" >> "$GITHUB_OUTPUT"
+          # 移除 packages 子目录，只保留固件镜像
+          rm -rf "${firmware_dir}/packages"
+          echo "固件文件列表："
+          ls -lh "${firmware_dir}/"
+
+      - name: 生成版本信息
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+            echo "version=${tag}" >> "$GITHUB_OUTPUT"
+            echo "is_release=true" >> "$GITHUB_OUTPUT"
+          else
+            short_sha="${GITHUB_SHA::7}"
+            echo "version=${short_sha}" >> "$GITHUB_OUTPUT"
+            echo "is_release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 上传固件 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: immortalwrt-${{ env.TARGET_BOARD }}-${{ env.TARGET_SUBTARGET }}-${{ steps.version.outputs.version }}
+          path: ${{ steps.organize.outputs.firmware_dir }}
+          retention-days: 7
+
+      - name: 创建 Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.organize.outputs.firmware_dir }}/*
+          generate_release_notes: true
+          tag_name: ${{ github.ref_name }}
