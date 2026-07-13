@@ -29,14 +29,14 @@ endif
 ifdef UBOOT_USE_INTREE_DTC
   $(eval $(call TestHostCommand,python3-dev, \
     Please install the python3-dev package, \
+    python3.14-config --includes 2>&1 | grep 'python3', \
     python3.13-config --includes 2>&1 | grep 'python3', \
     python3.12-config --includes 2>&1 | grep 'python3', \
     python3.11-config --includes 2>&1 | grep 'python3', \
     python3.10-config --includes 2>&1 | grep 'python3', \
     python3.9-config --includes 2>&1 | grep 'python3', \
     python3.8-config --includes 2>&1 | grep 'python3', \
-    python3.7-config --includes 2>&1 | grep 'python3', \
-    python3-config --includes 2>&1 | grep -E 'python3\.([7-9]|[0-9][0-9])\.?'))
+    python3-config --includes 2>&1 | grep -E 'python3\.([8-9]|[0-9][0-9])\.?'))
 
   $(eval $(call TestHostCommand,python3-setuptools, \
     Please install the Python3 setuptools module, \
@@ -77,6 +77,7 @@ UBOOT_MAKE_FLAGS = \
 	HOSTLDFLAGS="$(HOST_LDFLAGS)" \
 	LOCALVERSION="-ImmortalWrt-$(REVISION)" \
 	STAGING_PREFIX="$(STAGING_DIR_HOST)" \
+	PKG_CONFIG_SYSROOT_DIR="$(STAGING_DIR_HOST)" \
 	PKG_CONFIG_PATH="$(STAGING_DIR_HOST)/lib/pkgconfig" \
 	PKG_CONFIG_LIBDIR="$(STAGING_DIR_HOST)/lib/pkgconfig" \
 	PKG_CONFIG_EXTRAARGS="--static" \

@@ -13,9 +13,11 @@ rockchip_setup_interfaces()
 	armsom,sige7|\
 	ezpro,mrkaio-m68s|\
 	firefly,rk3568-roc-pc|\
+	friendlyarm,nanopi-m5|\
 	friendlyarm,nanopi-r2c|\
 	friendlyarm,nanopi-r2c-plus|\
 	friendlyarm,nanopi-r2s|\
+	friendlyarm,nanopi-r2s-plus|\
 	friendlyarm,nanopi-r3s|\
 	friendlyarm,nanopi-r4s|\
 	friendlyarm,nanopi-r4se|\
@@ -100,6 +102,7 @@ rockchip_setup_macs()
 	cyber,cyber3588-aib|\
 	ezpro,mrkaio-m68s|\
 	friendlyarm,nanopc-t6|\
+	friendlyarm,nanopi-m5|\
 	friendlyarm,nanopi-r2c|\
 	friendlyarm,nanopi-r2s|\
 	friendlyarm,nanopi-r76s|\
@@ -112,6 +115,7 @@ rockchip_setup_macs()
 		lan_mac=$(macaddr_add "$wan_mac" 1)
 		;;
 	friendlyarm,nanopi-r2c-plus|\
+	friendlyarm,nanopi-r2s-plus|\
 	friendlyarm,nanopi-r4s|\
 	friendlyarm,nanopi-r5s|\
 	friendlyarm,nanopi-r6s|\

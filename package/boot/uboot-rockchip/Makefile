@@ -73,6 +73,13 @@ define U-Boot/nanopi-r2s-rk3328
     friendlyarm_nanopi-r2s
 endef
 
+define U-Boot/nanopi-r2s-plus-rk3328
+  $(U-Boot/rk3328/Default)
+  NAME:=NanoPi R2S Plus
+  BUILD_DEVICES:= \
+    friendlyarm_nanopi-r2s-plus
+endef
+
 define U-Boot/orangepi-r1-plus-rk3328
   $(U-Boot/rk3328/Default)
   NAME:=Orange Pi R1 Plus
@@ -398,6 +405,13 @@ define U-Boot/generic-rk3576
     friendlyarm_nanopi-r76s
 endef
 
+define U-Boot/nanopi-m5-rk3576
+  $(U-Boot/rk3576/Default)
+  NAME:=NanoPi M5
+  BUILD_DEVICES:= \
+    friendlyarm_nanopi-m5
+endef
+
 define U-Boot/photonicat2-rk3576
   $(U-Boot/rk3576/Default)
   NAME:=Photonicat2
@@ -524,6 +538,7 @@ UBOOT_TARGETS := \
   nanopi-r2c-rk3328 \
   nanopi-r2c-plus-rk3328 \
   nanopi-r2s-rk3328 \
+  nanopi-r2s-plus-rk3328 \
   orangepi-r1-plus-rk3328 \
   orangepi-r1-plus-lts-rk3328 \
   roc-cc-rk3328 \
@@ -555,6 +570,7 @@ UBOOT_TARGETS := \
   rock-3b-rk3568 \
   sige3-rk3568 \
   generic-rk3576 \
+  nanopi-m5-rk3576 \
   photonicat2-rk3576 \
   rock-4d-rk3576 \
   cyber3588-aib-rk3588 \

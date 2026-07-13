@@ -483,7 +483,8 @@ define Device/tplink_deco-x80-5g
 	DEVICE_DTS_CONFIG := config@hk01.c5
 	SOC := ipq8074
 	DEVICE_PACKAGES := kmod-hwmon-gpiofan ipq-wifi-tplink_deco-x80-5g \
-	 	 kmod-usb-serial-option kmod-usb-net-qmi-wwan
+		kmod-usb-serial-option kmod-usb-net-qmi-wwan kmod-mhi-pci-generic \
+		kmod-mhi-wwan-ctrl kmod-mhi-wwan-mbim
 endef
 TARGET_DEVICES += tplink_deco-x80-5g
 
@@ -564,7 +565,7 @@ define Device/xiaomi_ax9000
 	SOC := ipq8072
 	KERNEL_SIZE := 57344k
 	DEVICE_PACKAGES := ipq-wifi-xiaomi_ax9000 kmod-ath11k-pci ath11k-firmware-qcn9074 \
-		kmod-ath10k-ct ath10k-firmware-qca9887-ct
+		kmod-ath10k-ct ath10k-firmware-qca9887-ct kmod-hwmon-emc2305
 ifeq ($(IB),)
 ifneq ($(CONFIG_TARGET_ROOTFS_INITRAMFS),)
 	ARTIFACTS := initramfs-factory.ubi

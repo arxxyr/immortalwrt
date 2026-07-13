@@ -19,6 +19,7 @@
 		led-running = &led_system_blue;
 		led-failsafe = &led_system_red;
 		led-upgrade = &led_system_green;
+		label-mac-device = &dp2;
 	};
 
 	chosen {
@@ -306,6 +307,7 @@
 			partition@1680000 {
 				label = "rootfs";
 				reg = <0x1680000 0x9000000>;
+				linux,rootfs;
 			};
 
 			partition@a680000 {

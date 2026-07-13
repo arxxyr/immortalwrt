@@ -191,7 +191,7 @@ define KernelPackage/libphy
 	   CONFIG_MDIO_BUS
   FILES:=$(LINUX_DIR)/drivers/net/phy/libphy.ko \
     $(LINUX_DIR)/drivers/net/phy/mdio-bus.ko@ge6.18
-  AUTOLOAD:=$(call AutoLoad,15,libphy !LINUX_6_12:mdio-bus,1)
+  AUTOLOAD:=$(call AutoLoad,15,libphy mdio-bus@ge6.18,1)
 endef
 
 define KernelPackage/libphy/description
@@ -579,7 +579,7 @@ define KernelPackage/phy-rtl8261n
    SUBMENU:=$(NETWORK_DEVICES_MENU)
    TITLE:=Realtek RTL8261N NBASE-T PHY driver
    KCONFIG:=CONFIG_RTL8261N_PHY
-   DEPENDS:=+kmod-libphy
+   DEPENDS:=@LINUX_6_12 +kmod-libphy
    FILES:=$(LINUX_DIR)/drivers/net/phy/rtl8261n/rtl8261n.ko
    AUTOLOAD:=$(call AutoLoad,18,rtl8261n,1)
 endef
@@ -700,7 +700,6 @@ endef
 
 define KernelPackage/dwmac-motorcomm/description
   Supports the Motorcomm DWMAC-based PCI Ethernet controllers.
-  Currently only YT6801 is supported.
 endef
 
 $(eval $(call KernelPackage,dwmac-motorcomm))
@@ -1493,7 +1492,7 @@ define KernelPackage/ixgbe
     CONFIG_IXGBE_DCA=n \
     CONFIG_IXGBE_DCB=y
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/ixgbe/ixgbe.ko
-  AUTOLOAD:=$(call AutoLoad,35,ixgbe)
+  AUTOLOAD:=$(call AutoLoad,35,ixgbe,1)
 endef
 
 define KernelPackage/ixgbe/description
@@ -1560,7 +1559,7 @@ $(eval $(call KernelPackage,ice))
 define KernelPackage/iavf
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Intel(R) Ethernet Adaptive Virtual Function support
-  DEPENDS:=@PCI_SUPPORT +kmod-libie +!LINUX_6_12:kmod-libie-adminq
+  DEPENDS:=@PCI_SUPPORT +kmod-libie +!LINUX_6_12:kmod-libie-adminq +!LINUX_6_12:kmod-ptp
   KCONFIG:= \
        CONFIG_I40EVF \
        CONFIG_IAVF
@@ -2310,6 +2309,23 @@ endef
 $(eval $(call KernelPackage,hinic))
 
 
+define KernelPackage/hinic3
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Huawei 3rd generation network adapters (HINIC3) support
+  DEPENDS:=@PCI_SUPPORT @(TARGET_armsr_armv8||TARGET_loongarch64||TARGET_x86) @LINUX_6_18
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/huawei/hinic3/hinic3.ko
+  KCONFIG:=CONFIG_HINIC3
+  AUTOLOAD:=$(call AutoProbe,hinic3)
+endef
+
+define KernelPackage/hinic3/description
+  This driver supports HiNIC 3rd gen Network Adapter (HINIC3).
+  The driver is supported on X86_64 and ARM64 little endian.
+endef
+
+$(eval $(call KernelPackage,hinic3))
+
+
 define KernelPackage/sfc
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Solarflare SFC9000/SFC9100/EF100-family support
@@ -2434,6 +2450,7 @@ endef
 
 $(eval $(call KernelPackage,mhi-wwan-mbim))
 
+
 define KernelPackage/mtk-t7xx
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=MediaTek T7xx 5G modem
@@ -2451,6 +2468,7 @@ define KernelPackage/mtk-t7xx/description
 endef
 
 $(eval $(call KernelPackage,mtk-t7xx))
+
 
 define KernelPackage/atlantic
   SUBMENU:=$(NETWORK_DEVICES_MENU)
@@ -2486,7 +2504,7 @@ $(eval $(call KernelPackage,lan743x))
 define KernelPackage/amazon-ena
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Elastic Network Adapter (for Amazon AWS)
-  DEPENDS:=@TARGET_x86_64||TARGET_armsr
+  DEPENDS:=@TARGET_x86_64||TARGET_armsr +LINUX_6_18:kmod-ptp
   KCONFIG:=CONFIG_ENA_ETHERNET
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/amazon/ena/ena.ko
   AUTOLOAD:=$(call AutoLoad,12,ena)
