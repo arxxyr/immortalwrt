@@ -70,9 +70,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: dl
-          key: dl-${{ env.TARGET_BOARD }}-${{ env.TARGET_SUBTARGET }}-${{ hashFiles('.config') }}
+          # v2：旧缓存中 go-mod-cache 的小文件曾被误删（见下方下载步骤），
+          # 不能再通过 restore-keys 复用，换前缀整体淘汰
+          key: dl-v2-${{ env.TARGET_BOARD }}-${{ env.TARGET_SUBTARGET }}-${{ hashFiles('.config') }}
           restore-keys: |
-            dl-${{ env.TARGET_BOARD }}-${{ env.TARGET_SUBTARGET }}-
+            dl-v2-${{ env.TARGET_BOARD }}-${{ env.TARGET_SUBTARGET }}-
 
       - name: 启用 ccache
         run: |
@@ -92,8 +94,10 @@ jobs:
       - name: 下载源码包
         run: |
           make -j$(nproc) download
-          # 删除下载失败的小文件（< 1KB 通常是错误页面）
-          find dl -size -1024c -exec rm -f {} + 2>/dev/null || true
+          # 删除下载失败的残缺文件（< 1KB 通常是错误页面），仅限 dl 顶层：
+          # 严禁递归进 dl/go-mod-cache——Go 模块缓存含大量合法的 <1KB 源文件，
+          # 误删会导致 sing-box 等 Go 包报 "no required module provides package"
+          find dl -maxdepth 1 -type f -size -1024c -delete 2>/dev/null || true
 
       - name: 编译固件
         run: |
