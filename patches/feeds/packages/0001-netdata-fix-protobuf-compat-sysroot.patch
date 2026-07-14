@@ -1,0 +1,12 @@
+diff --git a/admin/netdata/Makefile b/admin/netdata/Makefile
+index c0fe45668..ca5adfeb2 100644
+--- a/admin/netdata/Makefile
++++ b/admin/netdata/Makefile
+@@ -66,6 +66,7 @@ CONFIGURE_ARGS += \
+ 	--disable-ml
+ 
+ CONFIGURE_VARS += \
++	PKG_CONFIG_SYSROOT_DIR="$(STAGING_DIR)" \
+ 	PKG_CONFIG_PATH="$(STAGING_DIR)/usr/protobuf-compat/lib/pkgconfig:$(PKG_CONFIG_PATH)" \
+ 	CPPFLAGS="-I$(STAGING_DIR)/usr/protobuf-compat/include $(TARGET_CPPFLAGS)" \
+ 	CXXFLAGS="-I$(STAGING_DIR)/usr/protobuf-compat/include $(TARGET_CXXFLAGS)" \
