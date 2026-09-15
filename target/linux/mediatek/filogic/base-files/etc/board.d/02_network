@@ -72,6 +72,8 @@ mediatek_setup_interfaces()
 	livinet,li320|\
 	livinet,zr-3020|\
 	livinet,zr-3020-ubootmod|\
+	mercusys,mr85x|\
+	mercusys,mr85x-ubi|\
 	netis,n6-v2|\
 	netis,nx32u|\
 	qihoo,360t7|\
@@ -125,6 +127,9 @@ mediatek_setup_interfaces()
 	bananapi,bpi-r4-poe)
 		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4" "wan sfp-wan"
 		;;
+	bananapi,bpi-r4-pro-8x)
+		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4 lan5 lan6" "wan"
+		;;
 	comfast,cf-e393ax)
 		ucidef_set_interfaces_lan_wan "lan1" eth1
 		;;
@@ -171,6 +176,7 @@ mediatek_setup_interfaces()
 	cudy,tr3000-256mb-v1|\
 	cudy,tr3000-v1|\
 	cudy,tr3000-v1-ubootmod|\
+	glinet,gl-be10000|\
 	glinet,gl-mt2500|\
 	glinet,gl-mt2500-airoha|\
 	glinet,gl-mt3000|\
@@ -203,6 +209,9 @@ mediatek_setup_interfaces()
 	netcraze,nc-1812)
 		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4 lan5" "wan"
 		;;
+	ltc,vl7m19k)
+		ucidef_set_interfaces_lan_wan "lan0 lan1 lan2 lan3 eth1" eth2
+		;;
 	mediatek,mt7986a-rfb)
 		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4 lan6" "eth1 wan"
 		;;
@@ -212,13 +221,13 @@ mediatek_setup_interfaces()
 	mediatek,mt7988a-rfb)
 		ucidef_set_interfaces_lan_wan "lan0 lan1 lan2 lan3 eth2" eth1
 		;;
-	mercusys,mr85x)
-		ucidef_add_switch "switch0" "0:lan0" "1:lan1" "2:lan2" "6@eth0"
-		ucidef_set_interfaces_lan_wan "eth0.1 eth0.2 eth0.3" eth1
-		;;
 	mercusys,mr90x-v1|\
 	mercusys,mr90x-v1-ubi)
 		ucidef_set_interfaces_lan_wan "lan0 lan1 lan2" eth1
+		;;
+	smartrg,sdg-8712|\
+	smartrg,sdg-8732)
+		ucidef_set_interfaces_lan_wan "lan1 lan2" wan
 		;;
 	tenda,be12-pro)
 		ucidef_set_interfaces_lan_wan "lan3 lan4 lan5 eth1" eth2
@@ -246,6 +255,10 @@ mediatek_setup_interfaces()
 	tplink,tl-7dr7230-v1|\
 	tplink,tl-7dr7230-v2)
 		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4" wan
+		;;
+
+	tplink,tl-7dr7299-v1)
+		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4 lan5 lan6 sfp" "eth1"
 		;;
 	xiaomi,mi-router-ax3000t|\
 	xiaomi,mi-router-ax3000t-ubootmod|\

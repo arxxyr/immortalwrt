@@ -103,6 +103,16 @@ define Device/hasivo_s1100wp-8xgt-se
 endef
 TARGET_DEVICES += hasivo_s1100wp-8xgt-se
 
+define Device/hasivo_s600wp-5gt-2s-plus
+  SOC := rtl9303
+  DEVICE_VENDOR := Hasivo
+  DEVICE_MODEL := S600WP-5GT-2S+
+  DEVICE_PACKAGES := kmod-pse-hasivo-hs104 kmod-mfd-hasivo-stc8
+  IMAGE_SIZE := 29696k
+  $(Device/kernel-lzma)
+endef
+TARGET_DEVICES += hasivo_s600wp-5gt-2s-plus
+
 define Device/hasivo_s600wp-5gt-2sx-se
   SOC := rtl9303
   DEVICE_VENDOR := Hasivo
@@ -136,7 +146,7 @@ define Device/nicgiga_s100-0800s-m
   DEVICE_VENDOR := NicGiga
   DEVICE_MODEL := S100-0800S-M
   DEVICE_PACKAGES := kmod-gpio-pca953x
-  IMAGE_SIZE := 29696k
+  IMAGE_SIZE := 13312k
   $(Device/kernel-lzma)
 endef
 TARGET_DEVICES += nicgiga_s100-0800s-m
@@ -181,7 +191,7 @@ define Device/tplink_tl-st1008f-v2
   DEVICE_VARIANT := v2.0
   DEVICE_PACKAGES := kmod-gpio-pca953x
   SUPPORTED_DEVICES += tplink,tl-st1008f,v2
-  IMAGE_SIZE := 31808k
+  IMAGE_SIZE := 29696k
   $(Device/kernel-lzma)
 endef
 TARGET_DEVICES += tplink_tl-st1008f-v2

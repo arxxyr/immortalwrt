@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <linux/bitfield.h>
 #include <linux/delay.h>
 #include <linux/mdio.h>
 #include <linux/mfd/syscon.h>
@@ -167,6 +168,35 @@ enum rtpcs_page {
 #define DIGI_1(page)	((page) + 0x40)
 #define DIGI_2(page)	((page) + 0x80)
 
+/* TGR_PRO_0, reg 0x0d */
+#define RTL93XX_LINKDW_SEL		BIT(6)
+#define RTL93XX_LINKDW_SEL_DAC		0x0
+#define RTL93XX_LINKDW_SEL_NON_DAC	BIT(6)
+
+/* ANA_MISC, reg 0x00 */
+#define RTL93XX_FRC_CMU_EN_MASK		GENMASK(11, 10)
+#define RTL93XX_FRC_CMU_EN_UNFORCED	FIELD_PREP(RTL93XX_FRC_CMU_EN_MASK, 0x0)
+#define RTL93XX_FRC_CMU_EN_FORCE_OFF	FIELD_PREP(RTL93XX_FRC_CMU_EN_MASK, 0x1)
+#define RTL93XX_FRC_CMU_EN_FORCE_ON	FIELD_PREP(RTL93XX_FRC_CMU_EN_MASK, 0x3)
+#define RTL93XX_FRC_PDOWN_MASK		GENMASK(7, 6)
+#define RTL93XX_FRC_PDOWN_DOWN		FIELD_PREP(RTL93XX_FRC_PDOWN_MASK, 0x3)
+#define RTL93XX_FRC_PDOWN_UNFORCED	FIELD_PREP(RTL93XX_FRC_PDOWN_MASK, 0x0)
+#define RTL93XX_FRC_RX_EN_MASK		GENMASK(5, 4)
+#define RTL93XX_FRC_RX_EN_ON		FIELD_PREP(RTL93XX_FRC_RX_EN_MASK, 0x3)
+#define RTL93XX_FRC_RX_EN_OFF		FIELD_PREP(RTL93XX_FRC_RX_EN_MASK, 0x1)
+#define RTL93XX_FRC_V2ANALOG_MASK	GENMASK(1, 0)
+#define RTL93XX_FRC_V2ANALOG_UNFORCED	FIELD_PREP(RTL93XX_FRC_V2ANALOG_MASK, 0x0)
+#define RTL93XX_FRC_V2ANALOG_FORCE_OFF	FIELD_PREP(RTL93XX_FRC_V2ANALOG_MASK, 0x1)
+
+/* DIGI_1(WDIG), reg 0x01 */
+/*
+ * Gates a digital clock inside the SerDes. The exact block is unknown — it
+ * appears to be used by all modes except USXGMII and 10GBASE-R. The bit name
+ * is inherited from an earlier SerDes generation and has not been verified
+ * on RTL931x. GLI could mean "GMII Line Interface" or "Gigabit Line Interface".
+ */
+#define RTL931X_STOP_GLI_CLK		BIT(0)
+
 enum rtpcs_sds_type {
 	RTPCS_SDS_TYPE_UNKNOWN,
 	RTPCS_SDS_TYPE_5G,
@@ -237,6 +267,9 @@ struct rtpcs_sds_ops {
 		    int bithigh, int bitlow);
 	int (*write)(struct rtpcs_serdes *sds, enum rtpcs_page page, int regnum,
 		     int bithigh, int bitlow, u16 value);
+	/* write an arbitrary, possibly non-contiguous bitmask in a single call */
+	int (*write_mask)(struct rtpcs_serdes *sds, enum rtpcs_page page, int regnum,
+			  u16 mask, u16 value);
 
 	/* optional */
 	int (*xsg_write)(struct rtpcs_serdes *sds, enum rtpcs_page page, int regnum,
@@ -401,21 +434,31 @@ static int __rtpcs_sds_read_raw(struct rtpcs_ctrl *ctrl, int sds_id, enum rtpcs_
 	return (val & mask) >> bitlow;
 }
 
+static int __rtpcs_sds_write_mask(struct rtpcs_ctrl *ctrl, int sds_id, enum rtpcs_page page,
+				  int regnum, u16 mask, u16 set)
+{
+	int mmd_regnum = rtpcs_sds_to_mmd(page, regnum);
+
+	if (mask == 0xffff)
+		return mdiobus_c45_write(ctrl->bus, sds_id, MDIO_MMD_VEND1, mmd_regnum, set);
+
+	return mdiobus_c45_modify(ctrl->bus, sds_id, MDIO_MMD_VEND1, mmd_regnum, mask, set);
+}
+
 static int __rtpcs_sds_write_raw(struct rtpcs_ctrl *ctrl, int sds_id, enum rtpcs_page page,
 				 int regnum, int bithigh, int bitlow, u16 value)
 {
-	int mmd_regnum = rtpcs_sds_to_mmd(page, regnum);
 	u16 mask, set;
 
 	if (WARN_ON(bithigh < bitlow))
 		return -EINVAL;
 
 	if (bithigh == 15 && bitlow == 0)
-		return mdiobus_c45_write(ctrl->bus, sds_id, MDIO_MMD_VEND1, mmd_regnum, value);
+		return __rtpcs_sds_write_mask(ctrl, sds_id, page, regnum, 0xffff, value);
 
 	mask = GENMASK(bithigh, bitlow);
 	set = (value << bitlow) & mask;
-	return mdiobus_c45_modify(ctrl->bus, sds_id, MDIO_MMD_VEND1, mmd_regnum, mask, set);
+	return __rtpcs_sds_write_mask(ctrl, sds_id, page, regnum, mask, set);
 }
 
 /* Generic implementations, if no special behavior is needed */
@@ -432,6 +475,12 @@ static int rtpcs_generic_sds_op_write(struct rtpcs_serdes *sds, enum rtpcs_page 
 	return __rtpcs_sds_write_raw(sds->ctrl, sds->id, page, regnum, bithigh, bitlow, value);
 }
 
+static int rtpcs_generic_sds_op_write_mask(struct rtpcs_serdes *sds, enum rtpcs_page page,
+					   int regnum, u16 mask, u16 value)
+{
+	return __rtpcs_sds_write_mask(sds->ctrl, sds->id, page, regnum, mask, value);
+}
+
 /* Convenience helpers */
 
 static int rtpcs_sds_read_bits(struct rtpcs_serdes *sds, enum rtpcs_page page, int regnum,
@@ -444,6 +493,12 @@ static int rtpcs_sds_write_bits(struct rtpcs_serdes *sds, enum rtpcs_page page, 
 				int bithigh, int bitlow, u16 value)
 {
 	return sds->ops->write(sds, page, regnum, bithigh, bitlow, value);
+}
+
+static int rtpcs_sds_write_mask(struct rtpcs_serdes *sds, enum rtpcs_page page, int regnum,
+				u16 mask, u16 value)
+{
+	return sds->ops->write_mask(sds, page, regnum, mask, value);
 }
 
 static int rtpcs_sds_read(struct rtpcs_serdes *sds, enum rtpcs_page page, int regnum)
@@ -1252,6 +1307,18 @@ static const s16 rtpcs_93xx_sds_hw_mode_vals[RTPCS_SDS_MODE_MAX] = {
 	[RTPCS_SDS_MODE_USXGMII]		= RTPCS_93XX_SDS_MODE_USXGMII,
 };
 
+static bool rtpcs_93xx_sds_10gr_link_up(struct rtpcs_serdes *sds)
+{
+	int link;
+
+	/* Link status may be latched low; the second read is current state. */
+	link = rtpcs_sds_read_bits(sds, PAGE_TGR_STD_1, 0x0, 12, 12);
+	if (link < 0)
+		return false;
+
+	return rtpcs_sds_read_bits(sds, PAGE_TGR_STD_1, 0x0, 12, 12) == 1;
+}
+
 static int rtpcs_93xx_sds_set_autoneg(struct rtpcs_serdes *sds, unsigned int neg_mode,
 				      const unsigned long *advertising)
 {
@@ -1708,6 +1775,14 @@ static int rtpcs_930x_sds_op_write(struct rtpcs_serdes *sds, enum rtpcs_page pag
 	return __rtpcs_sds_write_raw(sds->ctrl, sds_id, page, regnum, bithigh, bitlow, value);
 }
 
+static int rtpcs_930x_sds_op_write_mask(struct rtpcs_serdes *sds, enum rtpcs_page page,
+					int regnum, u16 mask, u16 value)
+{
+	int sds_id = rtpcs_930x_sds_get_phys_sds_id(sds->id, page);
+
+	return __rtpcs_sds_write_mask(sds->ctrl, sds_id, page, regnum, mask, value);
+}
+
 /*
  * Realtek uses some nasty logic for digital parts of SerDes 2 and 3.
  *
@@ -1830,11 +1905,14 @@ static int rtpcs_930x_sds_wait_clock_ready(struct rtpcs_serdes *sds)
 
 static void rtpcs_930x_sds_set_power(struct rtpcs_serdes *sds, bool on)
 {
-	int power_down = on ? 0x0 : 0x3;
-	int rx_enable = on ? 0x3 : 0x1;
+	int power_down, rx_enable;
 
-	rtpcs_sds_write_bits(sds, PAGE_ANA_MISC, 0x00, 7, 6, power_down);
-	rtpcs_sds_write_bits(sds, PAGE_ANA_MISC, 0x00, 5, 4, rx_enable);
+	power_down = on ? RTL93XX_FRC_PDOWN_UNFORCED : RTL93XX_FRC_PDOWN_DOWN;
+	rx_enable = on ? RTL93XX_FRC_RX_EN_ON : RTL93XX_FRC_RX_EN_OFF;
+
+	rtpcs_sds_write_mask(sds, PAGE_ANA_MISC, 0x00,
+			     RTL93XX_FRC_PDOWN_MASK | RTL93XX_FRC_RX_EN_MASK,
+			     power_down | rx_enable);
 }
 
 static int rtpcs_930x_sds_reconfigure_to_pll(struct rtpcs_serdes *sds, enum rtpcs_sds_pll_type pll)
@@ -1885,7 +1963,7 @@ static void rtpcs_930x_sds_reset_state_machine(struct rtpcs_serdes *sds)
 static int rtpcs_930x_sds_init_state_machine(struct rtpcs_serdes *sds,
 					     enum rtpcs_sds_mode hw_mode)
 {
-	int loopback, link, cnt = 20, ret = -EBUSY;
+	int loopback, cnt = 20, ret = -EBUSY;
 
 	if (hw_mode != RTPCS_SDS_MODE_10GBASER)
 		return 0;
@@ -1900,10 +1978,7 @@ static int rtpcs_930x_sds_init_state_machine(struct rtpcs_serdes *sds,
 	while (cnt-- && ret) {
 		rtpcs_930x_sds_reset_state_machine(sds);
 
-		/* 10G link state (latched) */
-		link = rtpcs_sds_read_bits(sds, PAGE_TGR_STD_1, 0x00, 12, 12);
-		link = rtpcs_sds_read_bits(sds, PAGE_TGR_STD_1, 0x00, 12, 12);
-		if (link)
+		if (rtpcs_93xx_sds_10gr_link_up(sds))
 			ret = 0;
 	}
 
@@ -3089,11 +3164,6 @@ static int rtpcs_931x_sds_fiber_get_symerr(struct rtpcs_serdes *sds,
 	return symerr;
 }
 
-static bool rtpcs_931x_sds_10gr_link_up(struct rtpcs_serdes *sds)
-{
-	return rtpcs_sds_read_bits(sds, PAGE_TGR_STD_1, 0x0, 12, 12) == 1;
-}
-
 static void rtpcs_931x_sds_clear_symerr(struct rtpcs_serdes *sds,
 					enum rtpcs_sds_mode hw_mode)
 {
@@ -3365,6 +3435,17 @@ static int rtpcs_931x_sds_deactivate(struct rtpcs_serdes *sds)
 {
 	int ret;
 
+	ret = rtpcs_sds_write_mask(sds, PAGE_ANA_MISC, 0x0,
+				   RTL93XX_FRC_PDOWN_MASK | RTL93XX_FRC_RX_EN_MASK,
+				   RTL93XX_FRC_PDOWN_DOWN | RTL93XX_FRC_RX_EN_OFF);
+	if (ret)
+		return ret;
+
+	ret = rtpcs_sds_write_mask(sds, DIGI_1(PAGE_WDIG), 0x1, RTL931X_STOP_GLI_CLK,
+				   RTL931X_STOP_GLI_CLK);
+	if (ret)
+		return ret;
+
 	ret = rtpcs_931x_sds_power(sds, false);
 	if (ret)
 		return ret;
@@ -3374,7 +3455,36 @@ static int rtpcs_931x_sds_deactivate(struct rtpcs_serdes *sds)
 
 static int rtpcs_931x_sds_activate(struct rtpcs_serdes *sds)
 {
+	int ret;
+
+	if (sds->hw_mode != RTPCS_SDS_MODE_USXGMII &&
+	    sds->hw_mode != RTPCS_SDS_MODE_10GBASER) {
+		ret = rtpcs_sds_write_mask(sds, DIGI_1(PAGE_WDIG), 0x1, RTL931X_STOP_GLI_CLK, 0x0);
+		if (ret)
+			return ret;
+	}
+
+	ret = rtpcs_sds_write_mask(sds, PAGE_ANA_MISC, 0x0,
+				   RTL93XX_FRC_PDOWN_MASK | RTL93XX_FRC_RX_EN_MASK,
+				   RTL93XX_FRC_PDOWN_UNFORCED | RTL93XX_FRC_RX_EN_ON);
+	if (ret)
+		return ret;
+
 	return rtpcs_931x_sds_power(sds, true);
+}
+
+static void rtpcs_931x_sds_10g_ana_pre(struct rtpcs_serdes *sds)
+{
+	rtpcs_sds_write(sds, PAGE_ANA_10G, 0x12, 0x2740);
+	rtpcs_sds_write_bits(sds, PAGE_ANA_10G_EXT, 0x0, 15, 12, 0x0);
+	rtpcs_sds_write(sds, PAGE_ANA_10G_EXT, 0x2, 0x2010);
+}
+
+static void rtpcs_931x_sds_10g_ana_post(struct rtpcs_serdes *sds)
+{
+	rtpcs_sds_write(sds, PAGE_ANA_10G, 0x12, 0x27c0);
+	rtpcs_sds_write_bits(sds, PAGE_ANA_10G_EXT, 0x0, 15, 12, 0xc);
+	rtpcs_sds_write(sds, PAGE_ANA_10G_EXT, 0x2, 0x6010);
 }
 
 static void rtpcs_931x_sds_rx_reset(struct rtpcs_serdes *sds)
@@ -3382,16 +3492,13 @@ static void rtpcs_931x_sds_rx_reset(struct rtpcs_serdes *sds)
 	if (sds->type != RTPCS_SDS_TYPE_10G)
 		return;
 
-	rtpcs_sds_write(sds, PAGE_ANA_10G, 0x12, 0x2740);
-	rtpcs_sds_write(sds, PAGE_ANA_10G_EXT, 0x0, 0x0);	/* [11:6] DFE_TAP3_ODD | [5:0] DFE_TAP3_EVEN */
-	rtpcs_sds_write(sds, PAGE_ANA_10G_EXT, 0x2, 0x2010);
-	rtpcs_sds_write(sds, PAGE_ANA_MISC, 0x0, 0xc10);
+	rtpcs_931x_sds_10g_ana_pre(sds);
+	rtpcs_sds_write_mask(sds, PAGE_ANA_MISC, 0x0, RTL93XX_FRC_RX_EN_MASK,
+			     RTL93XX_FRC_RX_EN_OFF);
 
-	rtpcs_sds_write(sds, PAGE_ANA_10G, 0x12, 0x27c0);
-	rtpcs_sds_write(sds, PAGE_ANA_10G_EXT, 0x0, 0xc000); /* [11:6] DFE_TAP3_ODD | [5:0] DFE_TAP3_EVEN */
-	rtpcs_sds_write(sds, PAGE_ANA_10G_EXT, 0x2, 0x6010);
-	rtpcs_sds_write(sds, PAGE_ANA_MISC, 0x0, 0xc30);
-
+	rtpcs_931x_sds_10g_ana_post(sds);
+	rtpcs_sds_write_mask(sds, PAGE_ANA_MISC, 0x0, RTL93XX_FRC_RX_EN_MASK,
+			     RTL93XX_FRC_RX_EN_ON);
 	msleep(50);
 }
 
@@ -3415,7 +3522,6 @@ static void rtpcs_931x_sds_rxcal_leq_adapt(struct rtpcs_serdes *sds)
 
 	rtpcs_931x_sds_rxeq_leq_set_adapt(sds, false);
 	rtpcs_931x_sds_rx_reset(sds);
-	msleep(10);
 	rtpcs_931x_sds_rxeq_leq_set_adapt(sds, true);
 	msleep(100);
 
@@ -3494,7 +3600,7 @@ static void rtpcs_931x_sds_rxcal_fiber_adapt(struct rtpcs_serdes *sds)
 		rtpcs_931x_sds_clear_symerr(sds, RTPCS_SDS_MODE_10GBASER);
 		msleep(300);
 		symerr = rtpcs_931x_sds_fiber_get_symerr(sds, RTPCS_SDS_MODE_10GBASER);
-		link_up = rtpcs_931x_sds_10gr_link_up(sds);
+		link_up = rtpcs_93xx_sds_10gr_link_up(sds);
 		dev_dbg(dev, "SerDes %u symErr check %d: linkUp=%d symErr=0x%x\n", sds->id,
 			i + 1, link_up, symerr);
 
@@ -3606,38 +3712,6 @@ static int rtpcs_931x_sds_reconfigure_to_pll(struct rtpcs_serdes *sds, enum rtpc
 	return rtpcs_931x_sds_power(sds, true);
 }
 
-__always_unused
-static int rtpcs_931x_sds_link_sts_get(struct rtpcs_serdes *sds)
-{
-	u32 sts, sts1, latch_sts, latch_sts1;
-
-	switch (sds->hw_mode) {
-	case RTPCS_SDS_MODE_XSGMII:
-		sts = rtpcs_sds_read_bits(sds, DIGI_1(PAGE_SDS_EXT), 29, 8, 0);
-		sts1 = rtpcs_sds_read_bits(sds, DIGI_2(PAGE_SDS_EXT), 29, 8, 0);
-		latch_sts = rtpcs_sds_read_bits(sds, DIGI_1(PAGE_SDS_EXT), 30, 8, 0);
-		latch_sts1 = rtpcs_sds_read_bits(sds, DIGI_2(PAGE_SDS_EXT), 30, 8, 0);
-		break;
-
-	case RTPCS_SDS_MODE_SGMII:
-	case RTPCS_SDS_MODE_2500BASEX:
-		sts = rtpcs_sds_read_bits(sds, DIGI_1(PAGE_SDS_EXT), 29, 8, 0);
-		latch_sts = rtpcs_sds_read_bits(sds, DIGI_1(PAGE_SDS_EXT), 30, 8, 0);
-		break;
-
-	default:
-		sts = rtpcs_sds_read_bits(sds, PAGE_TGR_STD_1, 0, 12, 12);
-		latch_sts = rtpcs_sds_read_bits(sds, PAGE_TGR_STD_0, 1, 2, 2);
-		latch_sts1 = rtpcs_sds_read_bits(sds, DIGI_1(PAGE_FIB), 1, 2, 2);
-		sts1 = rtpcs_sds_read_bits(sds, DIGI_1(PAGE_FIB), 1, 2, 2);
-	}
-
-	dev_info(sds->ctrl->dev, "SerDes %d sts %d, sts1 %d, latch_sts %d, latch_sts1 %d\n",
-		 sds->id, sts, sts1, latch_sts, latch_sts1);
-
-	return sts1;
-}
-
 static int rtpcs_931x_sds_config_polarity(struct rtpcs_serdes *sds, unsigned int tx_pol,
 					  unsigned int rx_pol)
 {
@@ -3722,80 +3796,29 @@ static int rtpcs_931x_sds_config_tx_amps(struct rtpcs_serdes *sds, u8 pre_amp, u
 	return rtpcs_sds_write_bits(sds, PAGE_ANA_10G, 0x0, 1, 0, en_val);
 }
 
-/**
- * rtpcs_931x_sds_config_tx - Configure static TX path parameters
- */
-static int rtpcs_931x_sds_config_tx(struct rtpcs_serdes *sds,
-				    enum rtpcs_sds_attachment attachment)
-{
-	const struct rtpcs_sds_tx_config *tx_cfg;
-
-	if (sds->type != RTPCS_SDS_TYPE_10G)
-		return 0;
-
-	switch (attachment) {
-	case RTPCS_SDS_ATTACH_DAC_SHORT:
-		tx_cfg = &rtpcs_931x_sds_tx_cfg_sdac;
-		break;
-
-	case RTPCS_SDS_ATTACH_DAC_LONG:
-		tx_cfg = &rtpcs_931x_sds_tx_cfg_ldac;
-		break;
-
-	default:
-		if (sds->ctrl->chip_version == RTPCS_CHIP_V2)
-			/* consider 9311 vs. 9313 here too, see SDK */
-			tx_cfg = &rtpcs_931x_sds_tx_cfg_v2[sds->id - 2];
-		else
-			tx_cfg = &rtpcs_931x_sds_tx_cfg_v1[sds->id - 2];
-
-		break;
-	}
-
-	return rtpcs_931x_sds_config_tx_amps(sds, tx_cfg->pre_amp, tx_cfg->main_amp,
-					     tx_cfg->post_amp);
-}
-
-/**
- * rtpcs_931x_sds_config_rx - Configure static RX path parameters
- */
-static int rtpcs_931x_sds_config_rx(struct rtpcs_serdes *sds,
-				    enum rtpcs_sds_attachment attachment)
-{
-	/* TODO: Put all static RX configuration here */
-	return 0;
-}
-
 static int rtpcs_931x_sds_config_attachment(struct rtpcs_serdes *sds,
 					    enum rtpcs_sds_attachment attachment,
 					    enum rtpcs_sds_mode hw_mode)
 {
 	struct rtpcs_serdes *even_sds = rtpcs_sds_get_even(sds);
+	const struct rtpcs_sds_tx_config *tx_cfg;
 	bool is_dac, is_10g;
 	int ret;
 
-	/*
-	 * SDK identifies this as some kind of gating. It's enabled
-	 * here and later deactivated for non-10G and XSGMII.
-	 * (from DMS1250 SDK)
-	 */
-	rtpcs_sds_write_bits(sds, DIGI_1(PAGE_WDIG), 0x1, 0, 0, 0x1);
+	if (sds->type != RTPCS_SDS_TYPE_10G)
+		return 0;
 
 	rtpcs_sds_write_bits(sds, PAGE_ANA_10G, 0xe, 13, 11, 0x0);
 	if (hw_mode != RTPCS_SDS_MODE_XSGMII)
 		rtpcs_931x_sds_reset_leq_dfe(sds);
 
-	/*
-	 * SDK says: media none behavior
-	 *
-	 * - the first three calls are the same as in rx_reset
-	 * - the last one slightly differs in the value. Something is taken into power down
-	 *   while rx_reset doesn't do this.
-	 */
-	rtpcs_sds_write(sds, PAGE_ANA_10G, 0x12, 0x2740);
-	rtpcs_sds_write(sds, PAGE_ANA_10G_EXT, 0x0, 0x0);	/* [11:6] DFE_TAP3_ODD | [5:0] DFE_TAP3_EVEN */
-	rtpcs_sds_write(sds, PAGE_ANA_10G_EXT, 0x2, 0x2010);
-	rtpcs_sds_write(sds, PAGE_ANA_MISC, 0x0, 0xcd1); /* from 930x: [7:6] POWER_DOWN OF ?? */
+	/* SDK: media none behavior - baseline applied regardless of attachment */
+	rtpcs_931x_sds_10g_ana_pre(sds);
+
+	rtpcs_sds_write_mask(sds, PAGE_ANA_MISC, 0x0, RTL93XX_FRC_CMU_EN_MASK,
+			     RTL93XX_FRC_CMU_EN_FORCE_ON);
+	rtpcs_sds_write_mask(sds, PAGE_ANA_MISC, 0x0, RTL93XX_FRC_V2ANALOG_MASK,
+			     RTL93XX_FRC_V2ANALOG_FORCE_OFF);
 
 	rtpcs_sds_write_bits(sds, PAGE_ANA_10G, 0xf, 5, 0, 0x4);
 	rtpcs_sds_write_bits(sds, PAGE_ANA_5G0, 0x12, 7, 6, 0x1);
@@ -3803,70 +3826,67 @@ static int rtpcs_931x_sds_config_attachment(struct rtpcs_serdes *sds,
 	if (attachment == RTPCS_SDS_ATTACH_NONE)
 		return 0;
 
-	/* config SerDes TX path (amps, impedance, etc.) */
-	ret = rtpcs_931x_sds_config_tx(sds, attachment);
-	if (ret < 0)
-		return ret;
-
-	/* config SerDes RX path (LEQ, DFE, etc.) */
-	ret = rtpcs_931x_sds_config_rx(sds, attachment);
-	if (ret < 0)
-		return ret;
-
 	is_dac = (attachment == RTPCS_SDS_ATTACH_DAC_SHORT ||
 		  attachment == RTPCS_SDS_ATTACH_DAC_LONG);
 	is_10g = (hw_mode == RTPCS_SDS_MODE_10GBASER ||
 		  hw_mode == RTPCS_SDS_MODE_XSGMII ||
 		  hw_mode == RTPCS_SDS_MODE_USXGMII);
 
-	rtpcs_sds_write_bits(sds, PAGE_ANA_MISC, 0x0, 11, 10, 0x0);
+	rtpcs_sds_write_mask(sds, PAGE_ANA_MISC, 0x0, RTL93XX_FRC_CMU_EN_MASK,
+			     RTL93XX_FRC_CMU_EN_UNFORCED);
 	rtpcs_sds_write_bits(sds, PAGE_ANA_5G0, 0x7, 15, 15, is_dac ? 0x1 : 0x0);
-	rtpcs_sds_write_bits(sds, PAGE_ANA_MISC, 0x0, 11, 10, 0x3);
+	rtpcs_sds_write_mask(sds, PAGE_ANA_MISC, 0x0, RTL93XX_FRC_CMU_EN_MASK,
+			     RTL93XX_FRC_CMU_EN_FORCE_ON);
 
 	switch (attachment) {
 	case RTPCS_SDS_ATTACH_DAC_SHORT:
 	case RTPCS_SDS_ATTACH_DAC_LONG:
-		rtpcs_sds_write(sds, PAGE_ANA_COM, 0x19, 0xf0a5);	/* from XS1930-10 SDK */
-		rtpcs_sds_write(even_sds, PAGE_ANA_10G, 0x8, 0x02a0); /* [10:7] impedance */
+		tx_cfg = (attachment == RTPCS_SDS_ATTACH_DAC_SHORT) ? &rtpcs_931x_sds_tx_cfg_sdac :
+								      &rtpcs_931x_sds_tx_cfg_ldac;
+
+		rtpcs_sds_write(sds, PAGE_ANA_COM, 0x19, 0xf0a5);
+		rtpcs_sds_write(even_sds, PAGE_ANA_10G, 0x8, 0x02a0); /* [10:7] TX impedance */
 		break;
 
 	case RTPCS_SDS_ATTACH_FIBER:
 		if (is_10g)
-			rtpcs_sds_write_bits(sds, PAGE_ANA_10G, 0xf, 5, 0, 0x2); /* from DMS1250 SDK */
+			rtpcs_sds_write_bits(sds, PAGE_ANA_10G, 0xf, 5, 0, 0x2);
 
 		fallthrough;
 	default:
-		rtpcs_sds_write(sds, PAGE_ANA_COM, 0x19, 0xf0f0); /* from XS1930 SDK */
+		if (sds->ctrl->chip_version == RTPCS_CHIP_V2)
+			tx_cfg = &rtpcs_931x_sds_tx_cfg_v2[sds->id - 2];
+		else
+			tx_cfg = &rtpcs_931x_sds_tx_cfg_v1[sds->id - 2];
+
+		rtpcs_sds_write(sds, PAGE_ANA_COM, 0x19, 0xf0f0);
 		rtpcs_sds_write(even_sds, PAGE_ANA_10G, 0x8, 0x0294); /* [10:7] TX impedance */
 		break;
 	}
 
-	/* LINKDW_SEL? (same semantics as 930x) */
-	rtpcs_sds_write_bits(sds, PAGE_TGR_PRO_0, 0xd, 6, 6, is_dac ? 0x0 : 0x1);
+	ret = rtpcs_931x_sds_config_tx_amps(sds, tx_cfg->pre_amp, tx_cfg->main_amp,
+					    tx_cfg->post_amp);
+	if (ret)
+		return ret;
 
-	if (is_10g) {
-		rtpcs_sds_write(sds, PAGE_ANA_10G, 0x12, 0x27c0);
-		rtpcs_sds_write(sds, PAGE_ANA_10G_EXT, 0x0, 0xc000); /* [11:6] DFE_TAP3_ODD | [5:0] DFE_TAP3_EVEN */
-		rtpcs_sds_write(sds, PAGE_ANA_10G_EXT, 0x2, 0x6010);
-	}
+	rtpcs_sds_write_mask(sds, PAGE_TGR_PRO_0, 0xd, RTL93XX_LINKDW_SEL,
+			     is_dac ? RTL93XX_LINKDW_SEL_DAC : RTL93XX_LINKDW_SEL_NON_DAC);
 
-	/* FIXME: is this redundant with the writes below? */
-	rtpcs_sds_write(sds, PAGE_ANA_MISC, 0x0, 0xc30);			/* from 930x: [7:6] POWER_DOWN OF ?? */
-	rtpcs_sds_write_bits(sds, PAGE_ANA_MISC, 0x0, 9, 0, 0x30);
+	if (is_10g)
+		rtpcs_931x_sds_10g_ana_post(sds);
+
+	rtpcs_sds_write_mask(sds, PAGE_ANA_MISC, 0x0, RTL93XX_FRC_V2ANALOG_MASK,
+			     RTL93XX_FRC_V2ANALOG_UNFORCED);
 	rtpcs_sds_write_bits(sds, PAGE_ANA_5G0, 0x12, 7, 6, 0x3);
 
-	rtpcs_sds_write_bits(sds, PAGE_ANA_MISC, 0x0, 11, 10, 0x1);
-	rtpcs_sds_write_bits(sds, PAGE_ANA_MISC, 0x0, 11, 10, 0x3);
+	rtpcs_sds_write_mask(sds, PAGE_ANA_MISC, 0x0, RTL93XX_FRC_CMU_EN_MASK,
+			     RTL93XX_FRC_CMU_EN_FORCE_OFF);
+	rtpcs_sds_write_mask(sds, PAGE_ANA_MISC, 0x0, RTL93XX_FRC_CMU_EN_MASK,
+			     RTL93XX_FRC_CMU_EN_FORCE_ON);
 
 	/* clear pending SerDes RX idle interrupt flag */
-	regmap_write_bits(sds->ctrl->map, RTPCS_931X_ISR_SERDES_RXIDLE,
-			  BIT(sds->id - 2), BIT(sds->id - 2));
-
-	/* Gating as mentioned above, deactivated here for non-10G and XSGMII */
-	if (!is_10g || hw_mode == RTPCS_SDS_MODE_XSGMII)
-		rtpcs_sds_write_bits(sds, DIGI_1(PAGE_WDIG), 0x1, 0, 0, 0x0);
-
-	return 0;
+	return regmap_write_bits(sds->ctrl->map, RTPCS_931X_ISR_SERDES_RXIDLE,
+				 BIT(sds->id - 2), BIT(sds->id - 2));
 }
 
 /*
@@ -4064,18 +4084,12 @@ static int rtpcs_sds_config_polarity(struct rtpcs_serdes *sds, phy_interface_t i
 	return sds->ops->config_polarity(sds, tx_pol, rx_pol);
 }
 
-static void rtpcs_pcs_get_state(struct phylink_pcs *pcs, unsigned int neg_mode,
-				struct phylink_link_state *state)
+static void rtpcs_pcs_get_state_mac(struct rtpcs_link *link,
+				    struct phylink_link_state *state)
 {
-	struct rtpcs_link *link = rtpcs_phylink_pcs_to_link(pcs);
 	struct rtpcs_ctrl *ctrl = link->ctrl;
 	int port = link->port;
 	int linkup, speed;
-
-	state->link = 0;
-	state->speed = SPEED_UNKNOWN;
-	state->duplex = DUPLEX_UNKNOWN;
-	state->pause &= ~(MLO_PAUSE_RX | MLO_PAUSE_TX);
 
 	/* Read MAC side link twice */
 	for (int i = 0; i < 2; i++)
@@ -4124,6 +4138,62 @@ static void rtpcs_pcs_get_state(struct phylink_pcs *pcs, unsigned int neg_mode,
 		state->pause |= MLO_PAUSE_RX;
 	if (rtpcs_regmap_read_bits(ctrl, ctrl->cfg->mac_tx_pause_sts, port, port))
 		state->pause |= MLO_PAUSE_TX;
+}
+
+/*
+ * Decode PCS state from the SerDes clause-37 / Cisco-SGMII MII regs at page 0x2.
+ * Used for SGMII, 1000BASE-X and 2500BASE-X where the standard phylink helper applies.
+ */
+static void rtpcs_pcs_get_state_c37(struct rtpcs_serdes *sds, unsigned int neg_mode,
+				    struct phylink_link_state *state)
+{
+	const struct rtpcs_config *cfg = sds->ctrl->cfg;
+	int bmsr, lpa;
+
+	/* BMSR link status may be latched low; the second read is current state. */
+	bmsr = rtpcs_sds_read(sds, cfg->phy_page, MII_BMSR);
+	if (bmsr < 0)
+		return;
+	bmsr = rtpcs_sds_read(sds, cfg->phy_page, MII_BMSR);
+	if (bmsr < 0)
+		return;
+
+	lpa = rtpcs_sds_read(sds, cfg->phy_page, MII_LPA);
+	if (lpa < 0)
+		return;
+
+	phylink_mii_c22_pcs_decode_state(state, neg_mode, bmsr, lpa);
+}
+
+/* Decode the Clause 37 modes directly and use the MAC-side mirror otherwise. */
+static void rtpcs_pcs_get_state(struct phylink_pcs *pcs, unsigned int neg_mode,
+				struct phylink_link_state *state)
+{
+	struct rtpcs_link *link = rtpcs_phylink_pcs_to_link(pcs);
+	struct rtpcs_ctrl *ctrl = link->ctrl;
+	struct rtpcs_serdes *sds = link->sds;
+
+	state->link = 0;
+	/* Forced SGMII parameters are supplied by phylink out of band. */
+	if (state->interface != PHY_INTERFACE_MODE_SGMII ||
+	    neg_mode == PHYLINK_PCS_NEG_INBAND_ENABLED) {
+		state->speed = SPEED_UNKNOWN;
+		state->duplex = DUPLEX_UNKNOWN;
+		state->pause &= ~(MLO_PAUSE_RX | MLO_PAUSE_TX);
+	}
+
+	mutex_lock(&ctrl->lock);
+	switch (sds->hw_mode) {
+	case RTPCS_SDS_MODE_SGMII:
+	case RTPCS_SDS_MODE_1000BASEX:
+	case RTPCS_SDS_MODE_2500BASEX:
+		rtpcs_pcs_get_state_c37(sds, neg_mode, state);
+		break;
+	default:
+		rtpcs_pcs_get_state_mac(link, state);
+		break;
+	}
+	mutex_unlock(&ctrl->lock);
 }
 
 static void rtpcs_pcs_an_restart(struct phylink_pcs *pcs)
@@ -4216,31 +4286,39 @@ static int rtpcs_pcs_config(struct phylink_pcs *pcs, unsigned int neg_mode,
 	return ret;
 }
 
-static struct mii_bus *rtpcs_probe_serdes_bus(struct rtpcs_ctrl *ctrl)
+static void rtpcs_mdio_bus_put(void *data)
 {
-	struct device_node *np;
-	struct mii_bus *bus;
+	struct mii_bus *mdio_bus = data;
 
-	np = of_find_compatible_node(NULL, NULL, "realtek,otto-serdes-mdio");
-	if (!np) {
-		dev_err(ctrl->dev, "SerDes mdio bus not found in DT");
-		return ERR_PTR(-ENODEV);
+	put_device(&mdio_bus->dev);
+}
+
+static struct mii_bus *rtpcs_find_mdio_bus(struct rtpcs_ctrl *ctrl)
+{
+	struct device_node *mdio_np;
+	struct mii_bus *mdio_bus;
+	int ret;
+
+	mdio_np = of_parse_phandle(ctrl->dev->of_node, "mdio-parent-bus", 0);
+	if (!mdio_np)
+		return ERR_PTR(dev_err_probe(ctrl->dev, -ENODEV, "MDIO parent bus not found\n"));
+
+	if (!of_device_is_available(mdio_np)) {
+		of_node_put(mdio_np);
+		return ERR_PTR(dev_err_probe(ctrl->dev, -ENODEV, "MDIO parent bus not usable\n"));
 	}
 
-	if (!of_device_is_available(np)) {
-		dev_err(ctrl->dev, "SerDes mdio bus not usable");
-		of_node_put(np);
-		return ERR_PTR(-ENODEV);
-	}
+	mdio_bus = of_mdio_find_bus(mdio_np);
+	of_node_put(mdio_np);
+	if (!mdio_bus)
+		return ERR_PTR(dev_err_probe(ctrl->dev, -EPROBE_DEFER,
+					     "MDIO parent bus not (yet) active\n"));
 
-	bus = of_mdio_find_bus(np);
-	of_node_put(np);
-	if (!bus) {
-		dev_warn(ctrl->dev, "SerDes mdio bus not (yet) active");
-		return ERR_PTR(-EPROBE_DEFER);
-	}
+	ret = devm_add_action_or_reset(ctrl->dev, rtpcs_mdio_bus_put, mdio_bus);
+	if (ret)
+		return ERR_PTR(ret);
 
-	return bus;
+	return mdio_bus;
 }
 
 static void rtpcs_sds_put_fwnode(void *data)
@@ -4406,7 +4484,7 @@ static int rtpcs_probe(struct platform_device *pdev)
 	if (IS_ERR(ctrl->map))
 		return PTR_ERR(ctrl->map);
 
-	ctrl->bus = rtpcs_probe_serdes_bus(ctrl);
+	ctrl->bus = rtpcs_find_mdio_bus(ctrl);
 	if (IS_ERR(ctrl->bus))
 		return PTR_ERR(ctrl->bus);
 
@@ -4479,6 +4557,7 @@ static const struct phylink_pcs_ops rtpcs_838x_pcs_ops = {
 static const struct rtpcs_sds_ops rtpcs_838x_sds_ops = {
 	.read			= rtpcs_generic_sds_op_read,
 	.write			= rtpcs_generic_sds_op_write,
+	.write_mask		= rtpcs_generic_sds_op_write_mask,
 	.set_autoneg		= rtpcs_generic_sds_set_autoneg,
 	.restart_autoneg	= rtpcs_generic_sds_restart_autoneg,
 	.deactivate		= rtpcs_838x_sds_deactivate,
@@ -4514,6 +4593,7 @@ static const struct phylink_pcs_ops rtpcs_839x_pcs_ops = {
 static const struct rtpcs_sds_ops rtpcs_839x_sds_ops = {
 	.read			= rtpcs_generic_sds_op_read,
 	.write			= rtpcs_generic_sds_op_write,
+	.write_mask		= rtpcs_generic_sds_op_write_mask,
 	.set_autoneg		= rtpcs_generic_sds_set_autoneg,
 	.restart_autoneg	= rtpcs_generic_sds_restart_autoneg,
 	.deactivate		= rtpcs_839x_sds_deactivate,
@@ -4548,6 +4628,7 @@ static const struct phylink_pcs_ops rtpcs_930x_pcs_ops = {
 static const struct rtpcs_sds_ops rtpcs_930x_sds_ops = {
 	.read			= rtpcs_930x_sds_op_read,
 	.write			= rtpcs_930x_sds_op_write,
+	.write_mask		= rtpcs_930x_sds_op_write_mask,
 	.xsg_write		= rtpcs_930x_sds_op_xsg_write,
 	.set_autoneg		= rtpcs_93xx_sds_set_autoneg,
 	.restart_autoneg	= rtpcs_generic_sds_restart_autoneg,
@@ -4590,6 +4671,7 @@ static const struct phylink_pcs_ops rtpcs_931x_pcs_ops = {
 static const struct rtpcs_sds_ops rtpcs_931x_sds_ops = {
 	.read			= rtpcs_generic_sds_op_read,
 	.write			= rtpcs_generic_sds_op_write,
+	.write_mask		= rtpcs_generic_sds_op_write_mask,
 	.xsg_write		= rtpcs_931x_sds_op_xsg_write,
 	.set_autoneg		= rtpcs_93xx_sds_set_autoneg,
 	.restart_autoneg	= rtpcs_generic_sds_restart_autoneg,

@@ -235,7 +235,7 @@ $(eval $(call KernelPackage,mii))
 define KernelPackage/mdio-devres
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Supports MDIO device registration
-  DEPENDS:=+kmod-libphy +(TARGET_armsr||TARGET_bcm27xx_bcm2708||TARGET_loongarch64||TARGET_malta||TARGET_tegra):kmod-of-mdio
+  DEPENDS:=+kmod-libphy +(TARGET_armsr||TARGET_bcm27xx_bcm2708||TARGET_econet||TARGET_loongarch64||TARGET_malta||TARGET_tegra):kmod-of-mdio
 ifeq ($(KERNEL_PATCHVER),6.12)
   KCONFIG:=CONFIG_MDIO_DEVRES
 endif
@@ -254,7 +254,7 @@ $(eval $(call KernelPackage,mdio-devres))
 define KernelPackage/mdio-gpio
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:= Supports GPIO lib-based MDIO busses
-  DEPENDS:=+kmod-libphy @GPIO_SUPPORT +(TARGET_armsr||TARGET_bcm27xx_bcm2708||TARGET_loongarch64||TARGET_malta||TARGET_tegra):kmod-of-mdio
+  DEPENDS:=+kmod-libphy @GPIO_SUPPORT +(TARGET_armsr||TARGET_bcm27xx_bcm2708||TARGET_econet||TARGET_loongarch64||TARGET_malta||TARGET_tegra):kmod-of-mdio
   KCONFIG:= \
 	CONFIG_MDIO_BITBANG \
 	CONFIG_MDIO_GPIO
@@ -626,7 +626,7 @@ $(eval $(call KernelPackage,phy-vitesse))
 define KernelPackage/phy-aeonsemi-as21xxx
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Aeonsemi AS21xxx 10G Ethernet PHY
-  DEPENDS:=+aeonsemi-as21xxx-firmware +kmod-libphy
+  DEPENDS:=+kmod-libphy
   KCONFIG:=CONFIG_AS21XXX_PHY
   FILES:= \
    $(LINUX_DIR)/drivers/net/phy/as21xxx.ko
@@ -1089,7 +1089,7 @@ $(eval $(call KernelPackage,switch-rtl8306))
 define KernelPackage/switch-rtl8366-smi
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Realtek RTL8366 SMI switch interface support
-  DEPENDS:=@GPIO_SUPPORT +kmod-swconfig +(TARGET_armsr||TARGET_bcm27xx_bcm2708||TARGET_loongarch64||TARGET_malta||TARGET_tegra):kmod-of-mdio
+  DEPENDS:=@GPIO_SUPPORT +kmod-swconfig +(TARGET_armsr||TARGET_bcm27xx_bcm2708||TARGET_econet||TARGET_loongarch64||TARGET_malta||TARGET_tegra):kmod-of-mdio
   KCONFIG:=CONFIG_RTL8366_SMI
   FILES:=$(LINUX_DIR)/drivers/net/phy/rtl8366_smi.ko
   AUTOLOAD:=$(call AutoLoad,42,rtl8366_smi,1)

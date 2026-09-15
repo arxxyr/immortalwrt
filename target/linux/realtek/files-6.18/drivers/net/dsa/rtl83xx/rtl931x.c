@@ -287,7 +287,7 @@ static inline int rtldsa_931x_trk_mbr_ctr(int group)
 	return RTL931X_TRK_MBR_CTRL + (group << 3);
 }
 
-static void rtl931x_vlan_tables_read(u32 vlan, struct rtl838x_vlan_info *info)
+static void rtl931x_vlan_tables_read(u32 vlan, struct rtldsa_vlan_info *info)
 {
 	u32 v, w, x, y;
 	/* Read VLAN table (3) via register 0 */
@@ -325,7 +325,7 @@ static void rtl931x_vlan_tables_read(u32 vlan, struct rtl838x_vlan_info *info)
 	rtl_table_release(r);
 }
 
-static void rtl931x_vlan_set_tagged(u32 vlan, struct rtl838x_vlan_info *info)
+static void rtl931x_vlan_set_tagged(u32 vlan, struct rtldsa_vlan_info *info)
 {
 	struct table_reg *r;
 	u32 v, w, x, y;
@@ -372,6 +372,11 @@ static inline int rtl931x_mac_force_mode_ctrl(int p)
 static inline int rtl931x_mac_port_ctrl(int p)
 {
 	return RTL931X_MAC_L2_PORT_CTRL + (p << 7);
+}
+
+static inline int rtl931x_mac_max_len_reg(int p)
+{
+	return RTL931X_MAC_L2_PORT_MAX_LEN_CTRL + (p << 2);
 }
 
 static inline int rtl931x_l2_port_new_salrn(int p)
@@ -908,17 +913,41 @@ static void rtldsa_931x_enable_learning(int port, bool enable)
 		    RTL931X_L2_LRN_PORT_CONSTRT_CTRL + port * 4);
 }
 
-static void rtldsa_931x_enable_flood(int port, bool enable)
+static void rtldsa_931x_l2_port_new_sa_fwd(int port, enum rtldsa_flood_type mode)
 {
-	/* 0: forward
-	 * 1: drop
-	 * 2: trap to local CPU
-	 * 3: copy to local CPU
-	 * 4: trap to master CPU
-	 * 5: copy to master CPU
-	 */
-	sw_w32_mask(GENMASK(2, 0), enable ? 0 : 1,
+	u32 new_sa_fwd_shift = (port % 10) * 3;
+
+	sw_w32_mask(GENMASK(new_sa_fwd_shift + 2, new_sa_fwd_shift),
+		    mode << new_sa_fwd_shift,
+		    rtl931x_l2_port_new_sa_fwd(port));
+}
+
+static void rtldsa_931x_enable_flood(int port, enum rtldsa_flood_type mode)
+{
+	/* RTL931X_L2_UNKN_UC_FLD_PMSK is big-endian */
+	u32 port_offset = ((63 - port) / 32) * 4;
+	u32 port_mask = BIT(port % 32);
+	u32 val;
+
+	val = (mode == RTLDSA_FLOOD_TYPE_FORWARD) ? port_mask : 0;
+
+	sw_w32_mask(GENMASK(2, 0), mode,
 		    RTL931X_L2_LRN_PORT_CONSTRT_CTRL + port * 4);
+
+	sw_w32_mask(port_mask,
+		    val,
+		    RTL931X_L2_UNKN_UC_FLD_PMSK + port_offset);
+}
+
+static void rtldsa_931x_enable_bcast_flood(int port, bool enable)
+{
+	/* RTL931X_L2_BC_FLD_PMSK is big-endian */
+	u32 port_offset = ((63 - port) / 32) * 4;
+	u32 port_mask = BIT(port % 32);
+
+	sw_w32_mask(port_mask,
+		    enable ? port_mask : 0,
+		    RTL931X_L2_BC_FLD_PMSK + port_offset);
 }
 
 static u64 rtl931x_read_mcast_pmask(int idx)
@@ -1382,6 +1411,15 @@ static int rtl931x_pie_verify_template(struct rtl838x_switch_priv *priv,
 	if (ether_addr_to_u64(pr->dmac) && !rtl931x_pie_templ_has(t, TEMPLATE_FIELD_DMAC0))
 		return -1;
 
+	if (pr->itag_m && !rtl931x_pie_templ_has(t, TEMPLATE_FIELD_VLAN))
+		return -1;
+
+	if (pr->sport_m && !rtl931x_pie_templ_has(t, TEMPLATE_FIELD_L4_SPORT))
+		return -1;
+
+	if (pr->dport_m && !rtl931x_pie_templ_has(t, TEMPLATE_FIELD_L4_DPORT))
+		return -1;
+
 	/* TODO: Check more */
 
 	i = find_first_zero_bit(&priv->pie_use_bm[block * 4], PIE_BLOCK_SIZE);
@@ -1421,7 +1459,7 @@ static int rtl931x_pie_rule_add(struct rtl838x_switch_priv *priv, struct pie_rul
 			break;
 	}
 
-	if (block >= priv->r->n_pie_blocks) {
+	if (block >= max_block) {
 		mutex_unlock(&priv->pie_mutex);
 		return -EOPNOTSUPP;
 	}
@@ -1979,7 +2017,6 @@ const struct rtldsa_config rtldsa_931x_cfg = {
 	.l2_ctrl_1 = RTL931X_L2_AGE_CTRL,
 	.l2_port_aging_out = RTL931X_L2_PORT_AGE_CTRL,
 	.set_ageing_time = rtl931x_set_ageing_time,
-	.smi_poll_ctrl = RTL931X_SMI_PORT_POLLING_CTRL,
 	.l2_tbl_flush_ctrl = RTL931X_L2_TBL_FLUSH_CTRL,
 	.isr_glb_src = RTL931X_ISR_GLB_SRC,
 	.isr_port_link_sts_chg = RTL931X_ISR_PORT_LINK_STS_CHG,
@@ -1997,9 +2034,14 @@ const struct rtldsa_config rtldsa_931x_cfg = {
 	.vlan_fwd_on_inner = rtl931x_vlan_fwd_on_inner,
 	.stp_get = rtldsa_931x_stp_get,
 	.stp_set = rtl931x_stp_set,
+	.mac_force_mode_mask = RTL931X_FORCE_EN | RTL931X_FORCE_LINK_EN,
 	.mac_force_mode_ctrl = rtl931x_mac_force_mode_ctrl,
 	.mac_link_sts = RTL931X_MAC_LINK_STS,
 	.mac_port_ctrl = rtl931x_mac_port_ctrl,
+	.mac_capabilities = MAC_ASYM_PAUSE | MAC_SYM_PAUSE | MAC_10 | MAC_100 |
+			    MAC_1000FD | MAC_2500FD | MAC_5000FD | MAC_10000FD,
+	.mac_max_len_reg = rtl931x_mac_max_len_reg,
+	.max_frame = RTL931X_MAX_FRAME,
 	.l2_port_new_salrn = rtl931x_l2_port_new_salrn,
 	.l2_port_new_sa_fwd = rtl931x_l2_port_new_sa_fwd,
 	.get_mirror_config = rtldsa_931x_get_mirror_config,
@@ -2029,7 +2071,9 @@ const struct rtldsa_config rtldsa_931x_cfg = {
 	.l2_learning_setup = rtl931x_l2_learning_setup,
 	.led_init = rtldsa_931x_led_init,
 	.enable_learning = rtldsa_931x_enable_learning,
+	.enable_l2_new_sa_fwd = rtldsa_931x_l2_port_new_sa_fwd,
 	.enable_flood = rtldsa_931x_enable_flood,
+	.enable_bcast_flood = rtldsa_931x_enable_bcast_flood,
 	.set_receive_management_action = rtldsa_931x_set_receive_management_action,
 	.qos_init = rtldsa_931x_qos_init,
 	.trk_ctrl = RTL931X_TRK_CTRL,
